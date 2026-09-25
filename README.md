@@ -4,10 +4,10 @@ Loop-based rewrite of the AVD landing zone Bicep template. Where v1 had a fixed
 hub and three named spokes, this version takes spokes and subnets as arrays and
 loops over them — one spoke or five, same code.
 
-**Status: feature complete.** Everything from v1 is ported, plus NAT gateways,
-multiple host pools, application group user assignment and control plane
-diagnostics. Nothing has been deployed to Azure yet — all validation is
-`bicep build`, `lint` and `what-if`.
+**Status: deployed and verified.** Everything from v1 is ported, plus NAT
+gateways, multiple host pools, application group user assignment and control
+plane diagnostics. Template spec 1.2.0 has been deployed end to end through the
+portal wizard into North Europe, and every deployment guard returned clean.
 
 ## Identity model: cloud-only
 
@@ -185,8 +185,16 @@ Counts are approximate — what-if sometimes groups sub-resources differently.
 All files compile and lint clean with Bicep CLI 0.47.16. The example parameters
 and both edge cases above validate with `bicep build-params`.
 
-Nothing here has been deployed to Azure yet. `what-if` and `build` catch
-template errors; they do not catch quota, naming collisions, or policy.
+Deployed for real from template spec 1.2.0 via the portal wizard: two spokes,
+NAT gateway on the AVD spoke, storage with private endpoint, Log Analytics and
+one host pool, into North Europe. All five outputs returned the expected
+values, both peerings reached Connected, and the privatelink DNS zone linked to
+the hub and every spoke.
+
+What that run did **not** exercise: FortiGate hub (`hubFirewallType` was
+`'none'`, so no NVA subnets and no route tables), the Bastion subnet, more than
+one host pool, and the Entra group role assignments — the group object IDs were
+left blank.
 
 ## FSLogix share readiness
 
@@ -209,9 +217,9 @@ Entra application.
 
 ## Deployment guards
 
-Three outputs flag configurations that deploy successfully but do not work.
+Five outputs flag configurations that deploy successfully but do not work.
 None of them block the deployment — Bicep has no non-experimental assertion
-mechanism — so check them in the what-if output.
+mechanism — so read them on the deployment's Outputs blade once it finishes.
 
 | Output | Meaning |
 |---|---|
@@ -219,8 +227,9 @@ mechanism — so check them in the what-if output.
 | `storageHasNoPrivateEndpoint` | Storage deployed but no subnet was flagged `hostsPrivateEndpoints`, so the share is reachable only over its public endpoint. |
 | `resourceGroupNameCollisions` | A spoke named `storage` or `mgmt` produces the same resource group name as the shared storage or monitoring group. |
 | `hostPoolsSkippedNoAvdSpoke` | Host pools were defined but no spoke has `role: 'avd'`, so the control plane was skipped entirely. |
+| `bastionPrefixValid` | `false` when `bastionSubnetPrefix` is smaller than `/26`, which Azure rejects. |
 
-All four should be empty or false.
+The first four should be empty or false; `bastionPrefixValid` should be true.
 
 **These are deployment outputs, not what-if output.** What-if reports resource
 changes only; outputs are evaluated during a real deployment. So these appear
