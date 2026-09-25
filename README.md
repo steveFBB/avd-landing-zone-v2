@@ -4,9 +4,10 @@ Loop-based rewrite of the AVD landing zone Bicep template. Where v1 had a fixed
 hub and three named spokes, this version takes spokes and subnets as arrays and
 loops over them — one spoke or five, same code.
 
-**Status: in progress.** Hub, spokes, NSGs, route tables and peerings are built
-and validated. Storage, monitoring and the AVD control plane are not yet ported
-from v1.
+**Status: feature complete.** Everything from v1 is ported, plus NAT gateways,
+multiple host pools, application group user assignment and control plane
+diagnostics. Nothing has been deployed to Azure yet — all validation is
+`bicep build`, `lint` and `what-if`.
 
 ## Identity model: cloud-only
 
@@ -42,6 +43,15 @@ deployment shares this model.
 - An optional NAT gateway and public IP per spoke, for outbound internet
   access where there is no firewall
 - Hub-to-spoke and spoke-to-hub peerings for spokes that opt in
+- An FSLogix storage account and SMB share, with a private endpoint in the
+  AVD spoke and a privatelink DNS zone linked to the hub and every spoke
+- Optional Azure RBAC on the share for AVD user and admin groups
+- A Log Analytics workspace, with diagnostics from every VNet, the storage
+  account and every AVD control plane resource
+- Any number of pooled host pools, each with its own desktop application
+  group, all surfaced through a single workspace
+- The Desktop Virtualization User role assigned to the AVD users group on
+  each application group, so desktops are visible without a manual step
 
 ## Outbound internet access
 
@@ -72,12 +82,6 @@ behaviour is explicit rather than dependent on the template's API version.
 **A spoke with neither path still deploys successfully.** The failure appears
 later, as session hosts that never register. The `spokesWithoutOutbound`
 deployment output lists any spoke in that state — check it before deploying.
-
-## Still to port from v1
-
-- FSLogix storage account, file share, private endpoint, private DNS zone
-- Log Analytics workspace and diagnostic settings
-- AVD control plane (host pool, application group, workspace)
 
 ## Naming
 
@@ -165,11 +169,16 @@ Expected resource counts:
 
 | Configuration | Resources |
 |---|---|
-| 1 spoke, 1 subnet, no firewall, NAT gateway | 11 |
-| 2 spokes, 2 subnets, no firewall, NAT on the AVD spoke (the example file) | 17 |
-| 4 spokes, 5 subnets, FortiGate + Bastion subnet, no NAT | 36 |
+| The example file: 2 spokes, NAT on AVD, storage, monitoring, 1 host pool | ~40 |
+| Same with `hostPools` empty | ~34 |
+| Same with storage and monitoring off too | 17 |
 
-A NAT gateway adds two resources per spoke — the gateway and its public IP.
+A NAT gateway adds two resources per spoke (gateway and public IP). Storage
+adds about nine (account, file service, share, DNS zone, one zone link per
+VNet, private endpoint, zone group). Monitoring adds one plus a diagnostic
+setting per VNet and two for storage.
+
+Counts are approximate — what-if sometimes groups sub-resources differently.
 
 ## Validation status
 
@@ -178,6 +187,108 @@ and both edge cases above validate with `bicep build-params`.
 
 Nothing here has been deployed to Azure yet. `what-if` and `build` catch
 template errors; they do not catch quota, naming collisions, or policy.
+
+## FSLogix share readiness
+
+The template creates the storage account, share, private endpoint, DNS zone
+and Azure RBAC. **The share is not usable by FSLogix yet.**
+
+Two things remain, neither of which Bicep can do:
+
+1. **Enable Microsoft Entra Kerberos** on the storage account. Azure RBAC
+   controls who can reach the share; it does not authenticate SMB.
+2. **Set NTFS permissions** on the share root from a client that has mounted
+   it. Microsoft publishes the recommended permission set for FSLogix
+   profile containers.
+
+Until both are done, session hosts will not mount profiles.
+
+Also remember the cloud-only constraints: Entra-joined session hosts on
+Windows 11 24H2+ or Server 2025, and MFA disabled on the storage account's
+Entra application.
+
+## Deployment guards
+
+Three outputs flag configurations that deploy successfully but do not work.
+None of them block the deployment — Bicep has no non-experimental assertion
+mechanism — so check them in the what-if output.
+
+| Output | Meaning |
+|---|---|
+| `spokesWithoutOutbound` | Spokes with no NAT gateway and no firewall route. Their VMs have no internet. |
+| `storageHasNoPrivateEndpoint` | Storage deployed but no subnet was flagged `hostsPrivateEndpoints`, so the share is reachable only over its public endpoint. |
+| `resourceGroupNameCollisions` | A spoke named `storage` or `mgmt` produces the same resource group name as the shared storage or monitoring group. |
+| `hostPoolsSkippedNoAvdSpoke` | Host pools were defined but no spoke has `role: 'avd'`, so the control plane was skipped entirely. |
+
+All four should be empty or false.
+
+**These are deployment outputs, not what-if output.** What-if reports resource
+changes only; outputs are evaluated during a real deployment. So these appear
+after you deploy, not before. They save you troubleshooting time, but they are
+not a pre-flight check.
+
+## Session hosts
+
+The template does not deploy session hosts — VM size, image, and applications
+vary too much per customer. What it gives you is a host pool ready to receive
+them.
+
+Fetch a registration token when you deploy hosts:
+
+```
+az desktopvirtualization hostpool retrieve-registration-token --resource-group rg-avd --host-pool-name hp-desktops
+```
+
+The token is deliberately not a deployment output: deployment history persists
+indefinitely, and a registration token is a credential. It expires 30 days
+after deployment by default.
+
+Session hosts must be Entra-joined and running Windows 11 24H2 or newer, or
+Server 2025 — the cloud-only Entra Kerberos requirement.
+
+## Portal wizard
+
+`uiFormDefinition.json` gives the template a Create blade in the Azure portal,
+so you fill in a wizard instead of editing a parameters file.
+
+Publish it as a template spec:
+
+```
+.\scripts\publish-templatespec.ps1 -Location northeurope
+```
+
+Then in the portal: **Template specs** -> **avd-landing-zone** -> **Deploy**.
+
+The wizard has seven tabs:
+
+| Tab | What it collects |
+|---|---|
+| Basics | Subscription and region |
+| Hub | Hub network, firewall type, optional Bastion subnet |
+| Spokes | A grid — one row per spoke |
+| Subnets | A grid — one row per subnet, matched to a spoke by name |
+| Storage | FSLogix account and private endpoint, or off |
+| Monitoring | Log Analytics, or off |
+| AVD | A grid of host pools, workspace names, Entra group IDs |
+
+Adding a row to the Spokes grid adds a resource group, VNet, peerings and
+optionally a NAT gateway. Adding a row to Host pools adds a host pool,
+application group and workspace entry. Same arrays as the parameters file,
+just collected through a form.
+
+Republish after any change to `main.bicep` or the form — bump `-Version`
+each time, since template spec versions are immutable.
+
+### Editing the form
+
+Test changes in the [Form view sandbox](https://aka.ms/form/sandbox) before
+republishing. It renders the JSON live and reports schema errors, which is
+considerably faster than publishing and clicking through.
+
+Ten parameters are deliberately not exposed in the wizard — TLS version,
+shared key access, public network access, retention SKU and similar. They keep
+their defaults from `main.bicep`. Anyone needing to change those should use
+the parameters file directly rather than the portal.
 
 ## Known limitations
 
@@ -199,4 +310,8 @@ template errors; they do not catch quota, naming collisions, or policy.
 - NAT gateways are deployed as regional, not zonal. A zonal NAT gateway only
   serves resources in its own zone; the module accepts a `zone` parameter but
   `main.bicep` does not currently expose it.
-- Storage, monitoring and the AVD control plane are not yet ported.
+- Does not deploy session hosts, Bastion, or backup.
+- Pooled host pools only. Personal (1:1) host pools are not supported.
+- Desktop application groups only. RemoteApp is not implemented.
+- Redeploying rotates every host pool's registration token, because the token
+  is declared on the host pool resource itself.

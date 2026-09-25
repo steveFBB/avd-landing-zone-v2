@@ -133,6 +133,7 @@ param subnets = [
     prefix: '10.3.0.0/24'
     nsgType: 'avd'
     useNatGateway: true
+    hostsPrivateEndpoints: true
   }
   {
     spoke: 'prod'
@@ -140,6 +141,7 @@ param subnets = [
     prefix: '10.1.0.0/24'
     nsgType: 'empty'
     useNatGateway: false
+    hostsPrivateEndpoints: false
   }
 ]
 
@@ -159,3 +161,120 @@ param subnets = [
 // Set false only to keep Azure's legacy implicit outbound behaviour, which
 // Microsoft is retiring.
 param privateSubnets = true
+
+// -----------------------------------------------------------------------------
+// STORAGE
+// -----------------------------------------------------------------------------
+
+// false skips the storage account, share, private endpoint and DNS entirely.
+param deployStorage = true
+
+// Shared resource group for storage. Must NOT match any spoke name, since
+// each spoke creates rg-<name>.
+param storageRgName = 'rg-storage'
+
+// MUST be globally unique across all of Azure. Lowercase letters and digits
+// only, 3-24 characters. Change this before every deployment — the name
+// below will already be taken.
+param storageAccountName = 'stfslogixchangeme01'
+
+// SKU and kind must be compatible:
+//   Premium_LRS / Premium_ZRS  ->  kind FileStorage
+//   Standard_*                 ->  kind StorageV2
+// Premium is strongly recommended for FSLogix profile performance.
+param storageSku = 'Premium_LRS'
+param storageAccountKind = 'FileStorage'
+
+// For FileStorage this is the only valid value.
+param storageAccessTier = 'Hot'
+
+param fileShareName = 'profiles'
+
+// Premium file shares are provisioned — you pay for the quota, not usage.
+param fileShareQuotaGiB = 512
+
+// --- Storage security --------------------------------------------------------
+
+param storageMinimumTlsVersion = 'TLS1_2'
+param storageSupportsHttpsTrafficOnly = true
+param storageAllowBlobPublicAccess = false
+param storageAllowSharedKeyAccess = true
+
+// Leave 'Enabled' for the first deployment so the control plane can create
+// the share. After confirming the private endpoint resolves and a client can
+// mount the share, redeploy with 'Disabled' to close the public path.
+param storagePublicNetworkAccess = 'Enabled'
+
+param storageLargeFileSharesState = 'Enabled'
+
+param fslogixPrivateEndpointName = 'pe-fslogix-file'
+
+// Entra ID group object IDs for share access. Empty strings skip the role
+// assignments, so the template deploys before the groups exist.
+//   users  -> SMB Share Contributor (read/write profiles)
+//   admins -> SMB Share Elevated Contributor (also modify NTFS ACLs)
+// These control who can reach the share. NTFS permissions inside it are a
+// separate manual step.
+param avdUsersGroupObjectId = ''
+param avdAdminsGroupObjectId = ''
+
+// -----------------------------------------------------------------------------
+// MONITORING
+// -----------------------------------------------------------------------------
+
+// false skips the workspace and all diagnostic settings.
+param deployMonitoring = true
+
+// Shared resource group for Log Analytics. Must NOT match any spoke name.
+param monitoringRgName = 'rg-mgmt'
+
+param logAnalyticsWorkspaceName = 'law-avd'
+
+// Days, 30-730. Azure default is 30.
+param logAnalyticsRetentionDays = 30
+
+// PerGB2018 is the current pay-as-you-go SKU.
+param logAnalyticsSku = 'PerGB2018'
+
+// -----------------------------------------------------------------------------
+// AVD CONTROL PLANE
+// -----------------------------------------------------------------------------
+
+// One entry per host pool. An empty array deploys no control plane at all.
+//
+// Every pool is Pooled with depth-first load balancing, and gets its own
+// desktop application group. All application groups surface through the
+// single workspace below.
+//
+//   name             becomes hp-<name> and ag-<name>-desktop
+//   friendlyName     what users see in the AVD client
+//   maxSessionLimit  concurrent sessions per session host. Depends on VM
+//                    size — roughly 6-8 for 2 vCPU, 10-12 for 4 vCPU,
+//                    16-20 for 8 vCPU.
+//   startVMOnConnect power hosts on when a user connects. Requires the AVD
+//                    service principal to hold Desktop Virtualization Power
+//                    On Contributor on the subscription — a one-time manual
+//                    step. Leave false until that is done.
+//
+// The control plane lands in the AVD spoke's resource group, so one spoke
+// must have role = 'avd'.
+
+param hostPools = [
+  {
+    name: 'desktops'
+    friendlyName: 'Desktops'
+    maxSessionLimit: 10
+    startVMOnConnect: false
+  }
+]
+
+param avdWorkspaceName = 'ws-avd'
+param avdWorkspaceFriendlyName = 'AVD Workspace'
+
+// Registration token expiry defaults to 30 days from deployment time.
+// Leave it alone unless you need a different window.
+//
+// The token is not a deployment output — deployment history persists, and a
+// registration token is a credential. Fetch it when deploying session hosts:
+//   az desktopvirtualization hostpool retrieve-registration-token `
+//     --resource-group rg-avd --host-pool-name hp-desktops

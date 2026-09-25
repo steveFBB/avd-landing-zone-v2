@@ -26,7 +26,7 @@ param spokeName string
 param addressPrefix string
 
 @description('''Subnets for this spoke, already filtered by main.bicep. Each:
-{ name, prefix, nsgName, useNatGateway, disablePeNetworkPolicies }''')
+{ name, prefix, nsgName, useNatGateway, hostsPrivateEndpoints }''')
 param subnets array
 
 @description('Name of the route table to attach to every subnet in this spoke. Empty string attaches none.')
@@ -80,7 +80,9 @@ resource snets 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = [
     properties: {
       addressPrefix: subnet.prefix
       defaultOutboundAccess: !privateSubnets
-      privateEndpointNetworkPolicies: subnet.disablePeNetworkPolicies ? 'Disabled' : 'Enabled'
+      // Only the subnet actually hosting private endpoints has the policy
+      // disabled, rather than every subnet in the AVD spoke.
+      privateEndpointNetworkPolicies: subnet.hostsPrivateEndpoints ? 'Disabled' : 'Enabled'
       networkSecurityGroup: {
         id: nsgs[i].id
       }

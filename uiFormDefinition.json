@@ -1,0 +1,841 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2021-09-09/uiFormDefinition.schema.json#",
+  "view": {
+    "kind": "Form",
+    "properties": {
+      "title": "AVD Landing Zone",
+      "steps": [
+        {
+          "name": "basics",
+          "label": "Basics",
+          "elements": [
+            {
+              "name": "intro",
+              "type": "Microsoft.Common.TextBlock",
+              "visible": true,
+              "options": {
+                "text": "Deploys the network, storage and AVD control plane for a greenfield Azure Virtual Desktop environment. Session hosts are not deployed — the host pools created here are ready to receive them.",
+                "link": {
+                  "label": "Repository and documentation",
+                  "uri": "https://github.com/steveFBB/avd-landing-zone-v2"
+                }
+              }
+            },
+            {
+              "name": "cloudOnlyNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": true,
+              "options": {
+                "icon": "Info",
+                "text": "Cloud-only identity model. FSLogix uses Microsoft Entra Kerberos, so session hosts must be Entra-joined and running Windows 11 24H2 or later, or Windows Server 2025. Hybrid environments with a domain controller are not supported by this template."
+              }
+            },
+            {
+              "name": "subscription",
+              "type": "Microsoft.Common.SubscriptionSelector",
+              "label": "Subscription",
+              "toolTip": "Subscription everything is deployed into. The template creates its own resource groups.",
+              "visible": true
+            },
+            {
+              "name": "location",
+              "type": "Microsoft.Common.LocationSelector",
+              "label": "Region",
+              "toolTip": "Region for all resources. AVD metadata is supported in US and European regions, among others.",
+              "visible": true
+            }
+          ]
+        },
+        {
+          "name": "hub",
+          "label": "Hub",
+          "elements": [
+            {
+              "name": "hubRgName",
+              "type": "Microsoft.Common.TextBox",
+              "label": "Hub resource group name",
+              "defaultValue": "rg-hub",
+              "toolTip": "Must not match any spoke name, since each spoke creates rg-<name>.",
+              "constraints": {
+                "required": true,
+                "regex": "^[a-zA-Z0-9-_]{1,64}$",
+                "validationMessage": "Letters, numbers, hyphens and underscores, up to 64 characters."
+              },
+              "visible": true
+            },
+            {
+              "name": "hubVnetName",
+              "type": "Microsoft.Common.TextBox",
+              "label": "Hub virtual network name",
+              "defaultValue": "vnet-hub",
+              "constraints": {
+                "required": true,
+                "regex": "^[a-zA-Z0-9-_.]{2,64}$",
+                "validationMessage": "2 to 64 characters."
+              },
+              "visible": true
+            },
+            {
+              "name": "hubAddressPrefix",
+              "type": "Microsoft.Common.TextBox",
+              "label": "Hub address space",
+              "defaultValue": "10.0.0.0/16",
+              "toolTip": "CIDR range for the hub VNet. All hub subnets must fit inside it.",
+              "constraints": {
+                "required": true,
+                "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/[0-9]{1,2}$",
+                "validationMessage": "Enter a CIDR range, for example 10.0.0.0/16."
+              },
+              "visible": true
+            },
+            {
+              "name": "gatewaySubnetPrefix",
+              "type": "Microsoft.Common.TextBox",
+              "label": "GatewaySubnet prefix",
+              "defaultValue": "10.0.0.0/24",
+              "toolTip": "Azure fixes the name of this subnet. It is always created.",
+              "constraints": {
+                "required": true,
+                "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/[0-9]{1,2}$",
+                "validationMessage": "Enter a CIDR range, for example 10.0.0.0/24."
+              },
+              "visible": true
+            },
+            {
+              "name": "hubFirewallType",
+              "type": "Microsoft.Common.OptionsGroup",
+              "label": "Hub firewall",
+              "defaultValue": "None",
+              "toolTip": "A FortiGate provides outbound internet for the spokes and adds four NIC subnets. Without one, spokes need NAT gateways instead.",
+              "constraints": {
+                "required": true,
+                "allowedValues": [
+                  { "label": "None", "value": "none" },
+                  { "label": "FortiGate", "value": "fortigate" }
+                ]
+              },
+              "visible": true
+            },
+            {
+              "name": "firewallSection",
+              "type": "Microsoft.Common.Section",
+              "label": "FortiGate subnets",
+              "elements": [
+                {
+                  "name": "hubFirewallInternalIp",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "FortiGate internal IP",
+                  "defaultValue": "10.0.32.68",
+                  "toolTip": "Next hop for the spoke route tables. Must sit inside the internal subnet below, at .68 or higher — Azure reserves the first three usable addresses.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
+                    "validationMessage": "Enter an IPv4 address, for example 10.0.32.68."
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "fgtExternalPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "External subnet",
+                  "defaultValue": "10.0.32.0/26",
+                  "constraints": { "required": true },
+                  "visible": true
+                },
+                {
+                  "name": "fgtInternalPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Internal subnet",
+                  "defaultValue": "10.0.32.64/26",
+                  "constraints": { "required": true },
+                  "visible": true
+                },
+                {
+                  "name": "fgtHaPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "HA subnet",
+                  "defaultValue": "10.0.32.128/29",
+                  "constraints": { "required": true },
+                  "visible": true
+                },
+                {
+                  "name": "fgtMgmtPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Management subnet",
+                  "defaultValue": "10.0.32.160/27",
+                  "constraints": { "required": true },
+                  "visible": true
+                }
+              ],
+              "visible": "[equals(steps('hub').hubFirewallType, 'fortigate')]"
+            },
+            {
+              "name": "deployBastionSubnet",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "Create AzureBastionSubnet",
+              "toolTip": "Creates the subnet only. No Bastion host is deployed by this template.",
+              "visible": true
+            },
+            {
+              "name": "bastionSubnetPrefix",
+              "type": "Microsoft.Common.TextBox",
+              "label": "AzureBastionSubnet prefix",
+              "defaultValue": "10.0.1.0/26",
+              "toolTip": "Azure requires /26 or larger. Smaller prefixes are rejected.",
+              "constraints": {
+                "required": true,
+                "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/(1[0-9]|2[0-6])$",
+                "validationMessage": "Enter a CIDR range of /26 or larger, for example 10.0.1.0/26."
+              },
+              "visible": "[steps('hub').deployBastionSubnet]"
+            }
+          ]
+        },
+        {
+          "name": "spokes",
+          "label": "Spokes",
+          "elements": [
+            {
+              "name": "spokesInfo",
+              "type": "Microsoft.Common.TextBlock",
+              "visible": true,
+              "options": {
+                "text": "Each spoke gets its own resource group, virtual network and peerings. Names drive everything else: a spoke called 'avd' produces rg-avd, vnet-avd and rt-avd. Exactly one spoke should have the AVD role — session hosts and the FSLogix private endpoint land there."
+              }
+            },
+            {
+              "name": "spokes",
+              "type": "Microsoft.Common.EditableGrid",
+              "ariaLabel": "Spokes to create",
+              "label": "Spokes",
+              "constraints": {
+                "width": "Full",
+                "rows": {
+                  "count": {
+                    "min": 1,
+                    "max": 10
+                  }
+                },
+                "columns": [
+                  {
+                    "id": "name",
+                    "header": "Name",
+                    "width": "1fr",
+                    "element": {
+                      "type": "Microsoft.Common.TextBox",
+                      "placeholder": "avd",
+                      "constraints": {
+                        "required": true,
+                        "validations": [
+                          {
+                            "regex": "^[a-z0-9]{2,12}$",
+                            "message": "Lowercase letters and digits, 2 to 12 characters."
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "addressPrefix",
+                    "header": "Address space",
+                    "width": "1fr",
+                    "element": {
+                      "type": "Microsoft.Common.TextBox",
+                      "placeholder": "10.3.0.0/16",
+                      "constraints": {
+                        "required": true,
+                        "validations": [
+                          {
+                            "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/[0-9]{1,2}$",
+                            "message": "Enter a CIDR range, for example 10.3.0.0/16."
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "role",
+                    "header": "Role",
+                    "width": "1fr",
+                    "element": {
+                      "name": "role",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          { "label": "AVD", "value": "avd" },
+                          { "label": "Standard", "value": "none" }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "peerToHub",
+                    "header": "Peer to hub",
+                    "width": "1fr",
+                    "element": {
+                      "name": "peerToHub",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          { "label": "Yes", "value": true },
+                          { "label": "No", "value": false }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "natGateway",
+                    "header": "NAT gateway",
+                    "width": "1fr",
+                    "element": {
+                      "name": "natGateway",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          { "label": "Yes", "value": true },
+                          { "label": "No", "value": false }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "visible": true
+            },
+            {
+              "name": "natCostNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": true,
+              "options": {
+                "icon": "Warning",
+                "text": "A NAT gateway cannot be shared between virtual networks, so each spoke with one pays for its own gateway and public IP. Not needed when a hub firewall provides outbound access — and do not use both on the same subnet, because the route table wins and the NAT gateway bills for nothing."
+              }
+            }
+          ]
+        },
+        {
+          "name": "subnets",
+          "label": "Subnets",
+          "elements": [
+            {
+              "name": "subnetsInfo",
+              "type": "Microsoft.Common.TextBlock",
+              "visible": true,
+              "options": {
+                "text": "Each subnet belongs to a spoke, matched by name. A subnet called 'hosts' in spoke 'avd' becomes snet-avd-hosts with an NSG called nsg-avd-hosts. Exactly one subnet in the AVD spoke should host private endpoints — that is where the FSLogix endpoint lands."
+              }
+            },
+            {
+              "name": "subnets",
+              "type": "Microsoft.Common.EditableGrid",
+              "ariaLabel": "Subnets to create",
+              "label": "Subnets",
+              "constraints": {
+                "width": "Full",
+                "rows": {
+                  "count": {
+                    "min": 1,
+                    "max": 20
+                  }
+                },
+                "columns": [
+                  {
+                    "id": "spoke",
+                    "header": "Spoke",
+                    "width": "1fr",
+                    "element": {
+                      "type": "Microsoft.Common.TextBox",
+                      "placeholder": "avd",
+                      "constraints": {
+                        "required": true,
+                        "validations": [
+                          {
+                            "regex": "^[a-z0-9]{2,12}$",
+                            "message": "Must match one of the spoke names exactly."
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "name",
+                    "header": "Subnet name",
+                    "width": "1fr",
+                    "element": {
+                      "type": "Microsoft.Common.TextBox",
+                      "placeholder": "hosts",
+                      "constraints": {
+                        "required": true,
+                        "validations": [
+                          {
+                            "regex": "^[a-z0-9-]{2,24}$",
+                            "message": "Lowercase letters, digits and hyphens, 2 to 24 characters."
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "prefix",
+                    "header": "Address prefix",
+                    "width": "1fr",
+                    "element": {
+                      "type": "Microsoft.Common.TextBox",
+                      "placeholder": "10.3.0.0/24",
+                      "constraints": {
+                        "required": true,
+                        "validations": [
+                          {
+                            "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/[0-9]{1,2}$",
+                            "message": "Enter a CIDR range, for example 10.3.0.0/24."
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "nsgType",
+                    "header": "NSG rules",
+                    "width": "1fr",
+                    "element": {
+                      "name": "nsgType",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          { "label": "AVD baseline", "value": "avd" },
+                          { "label": "Empty", "value": "empty" }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "useNatGateway",
+                    "header": "Use NAT gateway",
+                    "width": "1fr",
+                    "element": {
+                      "name": "useNatGateway",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          { "label": "Yes", "value": true },
+                          { "label": "No", "value": false }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "hostsPrivateEndpoints",
+                    "header": "Private endpoints",
+                    "width": "1fr",
+                    "element": {
+                      "name": "hostsPrivateEndpoints",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          { "label": "Yes", "value": true },
+                          { "label": "No", "value": false }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "visible": true
+            },
+            {
+              "name": "nsgNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": true,
+              "options": {
+                "icon": "Info",
+                "text": "The AVD baseline NSG documents the outbound destinations AVD needs. It does not restrict egress — Azure's default rules still allow outbound internet. Real egress control needs a firewall or explicit deny rules."
+              }
+            }
+          ]
+        },
+        {
+          "name": "storage",
+          "label": "Storage",
+          "elements": [
+            {
+              "name": "deployStorage",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "Deploy FSLogix storage",
+              "defaultValue": true,
+              "toolTip": "Storage account, SMB share, private endpoint and private DNS zone.",
+              "visible": true
+            },
+            {
+              "name": "storageSection",
+              "type": "Microsoft.Common.Section",
+              "label": "FSLogix storage account",
+              "elements": [
+                {
+                  "name": "storageRgName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Storage resource group name",
+                  "defaultValue": "rg-storage",
+                  "toolTip": "Must not match any spoke name.",
+                  "constraints": { "required": true },
+                  "visible": true
+                },
+                {
+                  "name": "storageAccountName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Storage account name",
+                  "placeholder": "stcustomerfslogix01",
+                  "toolTip": "Must be globally unique across all of Azure.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^[a-z0-9]{3,24}$",
+                    "validationMessage": "Lowercase letters and digits only, 3 to 24 characters, globally unique."
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "storageSku",
+                  "type": "Microsoft.Common.DropDown",
+                  "label": "Redundancy",
+                  "defaultValue": "Premium (locally redundant)",
+                  "toolTip": "Premium is strongly recommended for FSLogix profile performance.",
+                  "constraints": {
+                    "required": true,
+                    "allowedValues": [
+                      { "label": "Premium (locally redundant)", "value": "Premium_LRS" },
+                      { "label": "Premium (zone redundant)", "value": "Premium_ZRS" },
+                      { "label": "Standard (locally redundant)", "value": "Standard_LRS" },
+                      { "label": "Standard (zone redundant)", "value": "Standard_ZRS" }
+                    ]
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "fileShareName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Profile share name",
+                  "defaultValue": "profiles",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^[a-z0-9-]{3,63}$",
+                    "validationMessage": "Lowercase letters, digits and hyphens, 3 to 63 characters."
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "fileShareQuotaGiB",
+                  "type": "Microsoft.Common.Slider",
+                  "label": "Share quota (GiB)",
+                  "defaultValue": 512,
+                  "min": 100,
+                  "max": 5120,
+                  "toolTip": "Premium shares are provisioned — you pay for the quota, not what is used.",
+                  "constraints": { "required": true },
+                  "visible": true
+                },
+                {
+                  "name": "fslogixPrivateEndpointName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Private endpoint name",
+                  "defaultValue": "pe-fslogix-file",
+                  "constraints": { "required": true },
+                  "visible": true
+                }
+              ],
+              "visible": "[steps('storage').deployStorage]"
+            },
+            {
+              "name": "storageReadinessNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[steps('storage').deployStorage]",
+              "options": {
+                "icon": "Warning",
+                "text": "The share is not usable by FSLogix straight after deployment. Microsoft Entra Kerberos must be enabled on the storage account, and NTFS permissions set on the share root from a client that has mounted it. Neither can be done by a template."
+              }
+            }
+          ]
+        },
+        {
+          "name": "monitoring",
+          "label": "Monitoring",
+          "elements": [
+            {
+              "name": "deployMonitoring",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "Deploy Log Analytics",
+              "defaultValue": true,
+              "toolTip": "Workspace plus diagnostic settings on every virtual network, the storage account and the AVD control plane.",
+              "visible": true
+            },
+            {
+              "name": "monitoringSection",
+              "type": "Microsoft.Common.Section",
+              "label": "Log Analytics workspace",
+              "elements": [
+                {
+                  "name": "monitoringRgName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Monitoring resource group name",
+                  "defaultValue": "rg-mgmt",
+                  "toolTip": "Must not match any spoke name.",
+                  "constraints": { "required": true },
+                  "visible": true
+                },
+                {
+                  "name": "logAnalyticsWorkspaceName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Workspace name",
+                  "defaultValue": "law-avd",
+                  "constraints": { "required": true },
+                  "visible": true
+                },
+                {
+                  "name": "logAnalyticsRetentionDays",
+                  "type": "Microsoft.Common.Slider",
+                  "label": "Retention (days)",
+                  "defaultValue": 30,
+                  "min": 30,
+                  "max": 730,
+                  "constraints": { "required": true },
+                  "visible": true
+                }
+              ],
+              "visible": "[steps('monitoring').deployMonitoring]"
+            },
+            {
+              "name": "monitoringScopeNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[steps('monitoring').deployMonitoring]",
+              "options": {
+                "icon": "Info",
+                "text": "Infrastructure diagnostics only. AVD Insights additionally needs monitoring agents and data collection rules on the session hosts, which this template does not deploy."
+              }
+            }
+          ]
+        },
+        {
+          "name": "avd",
+          "label": "AVD",
+          "elements": [
+            {
+              "name": "avdInfo",
+              "type": "Microsoft.Common.TextBlock",
+              "visible": true,
+              "options": {
+                "text": "Each host pool is pooled with depth-first load balancing and gets its own desktop application group. All application groups appear inside the single workspace. Leave the grid empty to skip the control plane entirely."
+              }
+            },
+            {
+              "name": "hostPools",
+              "type": "Microsoft.Common.EditableGrid",
+              "ariaLabel": "Host pools to create",
+              "label": "Host pools",
+              "constraints": {
+                "width": "Full",
+                "rows": {
+                  "count": {
+                    "min": 0,
+                    "max": 10
+                  }
+                },
+                "columns": [
+                  {
+                    "id": "name",
+                    "header": "Name",
+                    "width": "1fr",
+                    "element": {
+                      "type": "Microsoft.Common.TextBox",
+                      "placeholder": "desktops",
+                      "constraints": {
+                        "required": true,
+                        "validations": [
+                          {
+                            "regex": "^[a-z0-9-]{2,24}$",
+                            "message": "Lowercase letters, digits and hyphens, 2 to 24 characters."
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "friendlyName",
+                    "header": "Display name",
+                    "width": "1fr",
+                    "element": {
+                      "type": "Microsoft.Common.TextBox",
+                      "placeholder": "Finance Desktops",
+                      "constraints": { "required": true }
+                    }
+                  },
+                  {
+                    "id": "maxSessionLimit",
+                    "header": "Max sessions per host",
+                    "width": "1fr",
+                    "element": {
+                      "name": "maxSessionLimit",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          { "label": "4", "value": 4 },
+                          { "label": "6", "value": 6 },
+                          { "label": "8", "value": 8 },
+                          { "label": "10", "value": 10 },
+                          { "label": "12", "value": 12 },
+                          { "label": "16", "value": 16 },
+                          { "label": "20", "value": 20 }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "startVMOnConnect",
+                    "header": "Start VM on connect",
+                    "width": "1fr",
+                    "element": {
+                      "name": "startVMOnConnect",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          { "label": "No", "value": false },
+                          { "label": "Yes", "value": true }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "visible": true
+            },
+            {
+              "name": "avdWorkspaceName",
+              "type": "Microsoft.Common.TextBox",
+              "label": "Workspace name",
+              "defaultValue": "ws-avd",
+              "constraints": { "required": true },
+              "visible": true
+            },
+            {
+              "name": "avdWorkspaceFriendlyName",
+              "type": "Microsoft.Common.TextBox",
+              "label": "Workspace display name",
+              "defaultValue": "AVD Workspace",
+              "toolTip": "What users see when they subscribe in the AVD client.",
+              "constraints": { "required": true },
+              "visible": true
+            },
+            {
+              "name": "identitySection",
+              "type": "Microsoft.Common.Section",
+              "label": "Entra ID groups",
+              "elements": [
+                {
+                  "name": "groupsInfo",
+                  "type": "Microsoft.Common.TextBlock",
+                  "visible": true,
+                  "options": {
+                    "text": "Object IDs, not group names. Leave blank to skip the role assignments and assign access manually later — but without the users group, the desktop will not appear in anyone's client."
+                  }
+                },
+                {
+                  "name": "avdUsersGroupObjectId",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "AVD users group object ID",
+                  "placeholder": "00000000-0000-0000-0000-000000000000",
+                  "toolTip": "Gets Desktop Virtualization User on each application group, and SMB Share Contributor on the profile share.",
+                  "constraints": {
+                    "required": false,
+                    "regex": "^$|^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$",
+                    "validationMessage": "Enter a GUID, or leave blank."
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "avdAdminsGroupObjectId",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "AVD admins group object ID",
+                  "placeholder": "00000000-0000-0000-0000-000000000000",
+                  "toolTip": "Gets SMB Share Elevated Contributor on the profile share, which allows modifying NTFS permissions.",
+                  "constraints": {
+                    "required": false,
+                    "regex": "^$|^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$",
+                    "validationMessage": "Enter a GUID, or leave blank."
+                  },
+                  "visible": true
+                }
+              ],
+              "visible": true
+            },
+            {
+              "name": "sessionHostNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": true,
+              "options": {
+                "icon": "Info",
+                "text": "Session hosts are not deployed. After this completes, fetch a registration token with 'az desktopvirtualization hostpool retrieve-registration-token' and build hosts against it. The token expires 30 days after deployment."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "outputs": {
+      "kind": "Subscription",
+      "subscriptionId": "[steps('basics').subscription.id]",
+      "location": "[steps('basics').location.name]",
+      "parameters": {
+        "location": "[steps('basics').location.name]",
+
+        "hubRgName": "[steps('hub').hubRgName]",
+        "hubVnetName": "[steps('hub').hubVnetName]",
+        "hubAddressPrefix": "[steps('hub').hubAddressPrefix]",
+        "gatewaySubnetPrefix": "[steps('hub').gatewaySubnetPrefix]",
+        "hubFirewallType": "[steps('hub').hubFirewallType]",
+        "hubFirewallInternalIp": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.hubFirewallInternalIp, '')]",
+        "fgtExternalPrefix": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.fgtExternalPrefix, '')]",
+        "fgtInternalPrefix": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.fgtInternalPrefix, '')]",
+        "fgtHaPrefix": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.fgtHaPrefix, '')]",
+        "fgtMgmtPrefix": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.fgtMgmtPrefix, '')]",
+        "deployBastionSubnet": "[steps('hub').deployBastionSubnet]",
+        "bastionSubnetPrefix": "[if(steps('hub').deployBastionSubnet, steps('hub').bastionSubnetPrefix, '')]",
+
+        "spokes": "[steps('spokes').spokes]",
+        "subnets": "[steps('subnets').subnets]",
+
+        "deployStorage": "[steps('storage').deployStorage]",
+        "storageRgName": "[steps('storage').storageSection.storageRgName]",
+        "storageAccountName": "[steps('storage').storageSection.storageAccountName]",
+        "storageSku": "[steps('storage').storageSection.storageSku]",
+        "storageAccountKind": "[if(or(equals(steps('storage').storageSection.storageSku, 'Premium_LRS'), equals(steps('storage').storageSection.storageSku, 'Premium_ZRS')), 'FileStorage', 'StorageV2')]",
+        "fileShareName": "[steps('storage').storageSection.fileShareName]",
+        "fileShareQuotaGiB": "[steps('storage').storageSection.fileShareQuotaGiB]",
+        "fslogixPrivateEndpointName": "[steps('storage').storageSection.fslogixPrivateEndpointName]",
+
+        "deployMonitoring": "[steps('monitoring').deployMonitoring]",
+        "monitoringRgName": "[steps('monitoring').monitoringSection.monitoringRgName]",
+        "logAnalyticsWorkspaceName": "[steps('monitoring').monitoringSection.logAnalyticsWorkspaceName]",
+        "logAnalyticsRetentionDays": "[steps('monitoring').monitoringSection.logAnalyticsRetentionDays]",
+
+        "hostPools": "[steps('avd').hostPools]",
+        "avdWorkspaceName": "[steps('avd').avdWorkspaceName]",
+        "avdWorkspaceFriendlyName": "[steps('avd').avdWorkspaceFriendlyName]",
+        "avdUsersGroupObjectId": "[steps('avd').identitySection.avdUsersGroupObjectId]",
+        "avdAdminsGroupObjectId": "[steps('avd').identitySection.avdAdminsGroupObjectId]"
+      }
+    }
+  }
+}
