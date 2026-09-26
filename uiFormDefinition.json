@@ -14,7 +14,7 @@
               "type": "Microsoft.Common.TextBlock",
               "visible": true,
               "options": {
-                "text": "Deploys the network, storage and AVD control plane for a greenfield Azure Virtual Desktop environment. Session hosts are not deployed \u2014 the host pools created here are ready to receive them.",
+                "text": "Deploys a greenfield AVD landing zone: hub and spoke networks, an FSLogix storage account, Log Analytics, host pools and their session hosts. Cloud-only identities throughout — no domain controller, and session hosts must run Windows 11 24H2 or newer.",
                 "link": {
                   "label": "Repository and documentation",
                   "uri": "https://github.com/steveFBB/avd-landing-zone-v2"
@@ -126,7 +126,7 @@
                   "type": "Microsoft.Common.TextBox",
                   "label": "FortiGate internal IP",
                   "defaultValue": "10.0.32.68",
-                  "toolTip": "Next hop for the spoke route tables. Must sit inside the internal subnet below, at .68 or higher \u2014 Azure reserves the first three usable addresses.",
+                  "toolTip": "Next hop for the spoke route tables. Must sit inside the internal subnet below, at .68 or higher — Azure reserves the first three usable addresses.",
                   "constraints": {
                     "required": true,
                     "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
@@ -217,7 +217,7 @@
               "visible": true,
               "options": {
                 "icon": "Info",
-                "text": "Example: a spoke with the identifier 'avd' creates resource group rg-avd, virtual network vnet-avd, and (with a hub firewall) route table rt-avd. Do NOT type 'vnet-avd' here \u2014 that would produce vnet-vnet-avd. Exactly one spoke should have the AVD role: session hosts and the FSLogix private endpoint land there."
+                "text": "Example: a spoke with the identifier 'avd' creates resource group rg-avd, virtual network vnet-avd, and (with a hub firewall) route table rt-avd. Do NOT type 'vnet-avd' here — that would produce vnet-vnet-avd. Exactly one spoke should have the AVD role: session hosts and the FSLogix private endpoint land there."
               }
             },
             {
@@ -236,7 +236,7 @@
                 "columns": [
                   {
                     "id": "name",
-                    "header": "Spoke identifier",
+                    "header": "Spoke name (becomes rg-<name>, vnet-<name>)",
                     "width": "1fr",
                     "element": {
                       "type": "Microsoft.Common.TextBox",
@@ -349,7 +349,7 @@
               "visible": true,
               "options": {
                 "icon": "Warning",
-                "text": "A NAT gateway cannot be shared between virtual networks, so each spoke with one pays for its own gateway and public IP. Not needed when a hub firewall provides outbound access \u2014 and do not use both on the same subnet, because the route table wins and the NAT gateway bills for nothing."
+                "text": "A NAT gateway cannot be shared between virtual networks, so each spoke with one pays for its own gateway and public IP. Not needed when a hub firewall provides outbound access — and do not use both on the same subnet, because the route table wins and the NAT gateway bills for nothing."
               }
             }
           ]
@@ -391,7 +391,7 @@
                 "columns": [
                   {
                     "id": "spoke",
-                    "header": "Parent spoke identifier",
+                    "header": "Parent spoke name (must match Spokes tab)",
                     "width": "1fr",
                     "element": {
                       "type": "Microsoft.Common.TextBox",
@@ -409,7 +409,7 @@
                   },
                   {
                     "id": "name",
-                    "header": "Subnet identifier",
+                    "header": "Subnet name (becomes snet-<spoke>-<name>)",
                     "width": "1fr",
                     "element": {
                       "type": "Microsoft.Common.TextBox",
@@ -522,7 +522,7 @@
               "visible": true,
               "options": {
                 "icon": "Info",
-                "text": "The AVD baseline NSG documents the outbound destinations AVD needs. It does not restrict egress \u2014 Azure's default rules still allow outbound internet. Real egress control needs a firewall or explicit deny rules."
+                "text": "The AVD baseline NSG documents the outbound destinations AVD needs. It does not restrict egress — Azure's default rules still allow outbound internet. Real egress control needs a firewall or explicit deny rules."
               }
             }
           ]
@@ -616,7 +616,7 @@
                   "defaultValue": 512,
                   "min": 100,
                   "max": 5120,
-                  "toolTip": "Premium shares are provisioned \u2014 you pay for the quota, not what is used.",
+                  "toolTip": "Premium shares are provisioned — you pay for the quota, not what is used.",
                   "constraints": {
                     "required": true
                   },
@@ -641,7 +641,7 @@
               "visible": "[steps('storage').deployStorage]",
               "options": {
                 "icon": "Warning",
-                "text": "The share is not usable by FSLogix straight after deployment. Microsoft Entra Kerberos must be enabled on the storage account, and NTFS permissions set on the share root from a client that has mounted it. Neither can be done by a template."
+                "text": "Entra Kerberos is enabled on the account automatically. Granting admin consent, tagging the app for cloud-only group SIDs and setting NTFS permissions on the share all happen too, provided a managed identity is supplied on the Entra ID tab. Excluding the storage app from MFA Conditional Access stays manual."
               }
             }
           ]
@@ -767,6 +767,18 @@
                     }
                   },
                   {
+                    "id": "desktopFriendlyName",
+                    "header": "Desktop name in the client",
+                    "width": "1.2fr",
+                    "element": {
+                      "type": "Microsoft.Common.TextBox",
+                      "placeholder": "Finance Desktop",
+                      "constraints": {
+                        "required": false
+                      }
+                    }
+                  },
+                  {
                     "id": "maxSessionLimit",
                     "header": "Max sessions per host",
                     "width": "1fr",
@@ -831,10 +843,145 @@
                         ]
                       }
                     }
+                  },
+                  {
+                    "id": "sessionHostCount",
+                    "header": "Session hosts",
+                    "width": "1fr",
+                    "element": {
+                      "name": "sessionHostCount",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          {
+                            "label": "0",
+                            "value": 0
+                          },
+                          {
+                            "label": "1",
+                            "value": 1
+                          },
+                          {
+                            "label": "2",
+                            "value": 2
+                          },
+                          {
+                            "label": "3",
+                            "value": 3
+                          },
+                          {
+                            "label": "4",
+                            "value": 4
+                          },
+                          {
+                            "label": "5",
+                            "value": 5
+                          },
+                          {
+                            "label": "6",
+                            "value": 6
+                          },
+                          {
+                            "label": "8",
+                            "value": 8
+                          },
+                          {
+                            "label": "10",
+                            "value": 10
+                          },
+                          {
+                            "label": "12",
+                            "value": 12
+                          },
+                          {
+                            "label": "16",
+                            "value": 16
+                          },
+                          {
+                            "label": "20",
+                            "value": 20
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "id": "vmSize",
+                    "header": "VM size",
+                    "width": "1.3fr",
+                    "element": {
+                      "name": "vmSize",
+                      "type": "Microsoft.Common.DropDown",
+                      "placeholder": "Select...",
+                      "constraints": {
+                        "required": true,
+                        "allowedValues": [
+                          {
+                            "label": "D2as v4   — 2 vCPU, 8 GB",
+                            "value": "Standard_D2as_v4"
+                          },
+                          {
+                            "label": "D4as v4   — 4 vCPU, 16 GB",
+                            "value": "Standard_D4as_v4"
+                          },
+                          {
+                            "label": "D8as v4   — 8 vCPU, 32 GB",
+                            "value": "Standard_D8as_v4"
+                          },
+                          {
+                            "label": "E4as v4   — 4 vCPU, 32 GB",
+                            "value": "Standard_E4as_v4"
+                          },
+                          {
+                            "label": "D4s v4    — 4 vCPU, 16 GB",
+                            "value": "Standard_D4s_v4"
+                          },
+                          {
+                            "label": "D8s v4    — 8 vCPU, 32 GB",
+                            "value": "Standard_D8s_v4"
+                          },
+                          {
+                            "label": "D2ads v5  — 2 vCPU, 8 GB",
+                            "value": "Standard_D2ads_v5"
+                          },
+                          {
+                            "label": "D4ads v5  — 4 vCPU, 16 GB",
+                            "value": "Standard_D4ads_v5"
+                          },
+                          {
+                            "label": "D8ads v5  — 8 vCPU, 32 GB",
+                            "value": "Standard_D8ads_v5"
+                          },
+                          {
+                            "label": "D16ads v5 — 16 vCPU, 64 GB",
+                            "value": "Standard_D16ads_v5"
+                          },
+                          {
+                            "label": "E4ads v5  — 4 vCPU, 32 GB",
+                            "value": "Standard_E4ads_v5"
+                          },
+                          {
+                            "label": "E8ads v5  — 8 vCPU, 64 GB",
+                            "value": "Standard_E8ads_v5"
+                          }
+                        ]
+                      }
+                    }
                   }
                 ]
               },
               "visible": true
+            },
+            {
+              "name": "quotaNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": true,
+              "options": {
+                "icon": "Warning",
+                "text": "Check core quota for the size family in this region before deploying. Quota is per family, defaults to zero for many of them, and a shortfall fails validation rather than the deployment. Run: az vm list-usage --location <region> --output table. All sizes listed support Trusted Launch, which the session hosts require; v3 and older families do not."
+              }
             },
             {
               "name": "avdWorkspaceName",
@@ -858,16 +1005,282 @@
               "visible": true
             },
             {
-              "name": "identitySection",
+              "name": "deploySessionHosts",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "Deploy session hosts",
+              "defaultValue": true,
+              "toolTip": "Unticked builds the host pools, application groups and workspace with no VMs, ignoring the session host count on each row above.",
+              "visible": true
+            },
+            {
+              "name": "sessionHostSection",
               "type": "Microsoft.Common.Section",
-              "label": "Entra ID groups",
+              "label": "Session hosts",
+              "elements": [
+                {
+                  "name": "sessionHostInfo",
+                  "type": "Microsoft.Common.TextBlock",
+                  "visible": true,
+                  "options": {
+                    "text": "Hosts are built from Windows 11 Enterprise multi-session 25H2 with Microsoft 365 Apps, joined to Entra ID, and registered with their host pool automatically. They land in the AVD spoke's subnet that uses the AVD NSG rule set."
+                  }
+                },
+                {
+                  "name": "adminUsername",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Local administrator username",
+                  "defaultValue": "avdadmin",
+                  "toolTip": "A break-glass account on each host. Users sign in with their Entra credentials, not this one. Azure rejects administrator, admin, user, guest and root.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^[a-z][a-z0-9]{2,19}$",
+                    "validationMessage": "Lowercase letters and digits, 3 to 20 characters, starting with a letter."
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "adminPassword",
+                  "type": "Microsoft.Common.PasswordBox",
+                  "label": {
+                    "password": "Local administrator password",
+                    "confirmPassword": "Confirm password"
+                  },
+                  "toolTip": "12 to 123 characters, using three of: uppercase, lowercase, digit, symbol.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^.{12,123}$",
+                    "validationMessage": "Between 12 and 123 characters."
+                  },
+                  "options": {
+                    "hideConfirmation": false
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "imageSku",
+                  "type": "Microsoft.Common.DropDown",
+                  "label": "Image",
+                  "defaultValue": "Windows 11 multi-session 25H2 + Microsoft 365 Apps",
+                  "toolTip": "Only 24H2 and newer are offered: cloud-only Entra Kerberos does not support older builds, so a 23H2 host deploys fine and then cannot mount a profile. The Microsoft 365 images live under a different marketplace offer, which the template works out from the SKU.",
+                  "constraints": {
+                    "required": true,
+                    "allowedValues": [
+                      {
+                        "label": "Windows 11 multi-session 25H2 + Microsoft 365 Apps",
+                        "value": "win11-25h2-avd-m365"
+                      },
+                      {
+                        "label": "Windows 11 multi-session 24H2 + Microsoft 365 Apps",
+                        "value": "win11-24h2-avd-m365"
+                      },
+                      {
+                        "label": "Windows 11 multi-session 25H2 (no Office)",
+                        "value": "win11-25h2-avd"
+                      },
+                      {
+                        "label": "Windows 11 multi-session 24H2 (no Office)",
+                        "value": "win11-24h2-avd"
+                      }
+                    ]
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "osDiskType",
+                  "type": "Microsoft.Common.DropDown",
+                  "label": "OS disk",
+                  "defaultValue": "Standard SSD",
+                  "toolTip": "Profiles live on the FSLogix share, not the OS disk, so premium disks buy less here than they would on a single-session desktop.",
+                  "constraints": {
+                    "required": true,
+                    "allowedValues": [
+                      {
+                        "label": "Standard SSD",
+                        "value": "StandardSSD_LRS"
+                      },
+                      {
+                        "label": "Premium SSD",
+                        "value": "Premium_LRS"
+                      },
+                      {
+                        "label": "Standard HDD",
+                        "value": "Standard_LRS"
+                      }
+                    ]
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "acceleratedNetworking",
+                  "type": "Microsoft.Common.CheckBox",
+                  "label": "Accelerated networking",
+                  "defaultValue": true,
+                  "toolTip": "Untick this if you chose a B-series size. B-series does not support it and the deployment fails outright rather than carrying on without it.",
+                  "visible": true
+                },
+                {
+                  "name": "enrolWithIntune",
+                  "type": "Microsoft.Common.CheckBox",
+                  "label": "Enrol in Intune",
+                  "defaultValue": false,
+                  "toolTip": "Enrols each host during the Entra join. Requires Microsoft Entra ID P1.",
+                  "visible": true
+                },
+                {
+                  "name": "configureFslogix",
+                  "type": "Microsoft.Common.CheckBox",
+                  "label": "Configure FSLogix profile containers",
+                  "defaultValue": true,
+                  "toolTip": "The gallery image ships FSLogix installed but not configured. This points it at the profile share and enables cloud Kerberos, without which the host cannot authenticate to Azure Files. Ignored when storage is not deployed.",
+                  "visible": true
+                },
+                {
+                  "name": "fslogixProfileSizeMB",
+                  "type": "Microsoft.Common.DropDown",
+                  "label": "Maximum profile size",
+                  "defaultValue": "30 GB",
+                  "toolTip": "A ceiling, not an allocation. The container grows as the profile does.",
+                  "constraints": {
+                    "required": true,
+                    "allowedValues": [
+                      {
+                        "label": "10 GB",
+                        "value": 10000
+                      },
+                      {
+                        "label": "20 GB",
+                        "value": 20000
+                      },
+                      {
+                        "label": "30 GB",
+                        "value": 30000
+                      },
+                      {
+                        "label": "50 GB",
+                        "value": 50000
+                      },
+                      {
+                        "label": "100 GB",
+                        "value": 100000
+                      }
+                    ]
+                  },
+                  "visible": "[steps('avd').sessionHostSection.configureFslogix]"
+                },
+                {
+                  "name": "restartAfterFslogix",
+                  "type": "Microsoft.Common.CheckBox",
+                  "label": "Restart hosts after configuring FSLogix",
+                  "defaultValue": true,
+                  "toolTip": "Cloud Kerberos is read by LSA at boot, so a host that is not restarted cannot authenticate to the share. Untick only if you will restart them yourself.",
+                  "visible": "[steps('avd').sessionHostSection.configureFslogix]"
+                }
+              ],
+              "visible": "[steps('avd').deploySessionHosts]"
+            },
+            {
+              "name": "manualStepsNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": true,
+              "options": {
+                "icon": "Info",
+                "text": "Session hosts are joined to Entra ID and registered with their host pool automatically. Whether the profile share is ready for them depends on the Entra ID tab."
+              }
+            }
+          ]
+        },
+        {
+          "name": "identity",
+          "label": "Entra ID",
+          "elements": [
+            {
+              "name": "identityInfo",
+              "type": "Microsoft.Common.TextBlock",
+              "visible": true,
+              "options": {
+                "text": "Creating Entra groups and finishing the Entra Kerberos setup are Microsoft Graph operations, and the portal's deployment flow carries no Graph token. Supplying a managed identity that holds the right Graph permissions lets the deployment do that work itself. Without one, everything here has to be done by hand afterwards."
+              }
+            },
+            {
+              "name": "bootstrapNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": true,
+              "options": {
+                "icon": "Info",
+                "text": "Create the identity once per tenant with scripts/bootstrap-entra-identity.ps1 from the repository — granting its Graph permissions needs Global Administrator or Privileged Role Administrator. To fetch the resource ID again later, run scripts/get-identity-id.ps1, which prints it and copies it to the clipboard."
+              }
+            },
+            {
+              "name": "entraManagedIdentityId",
+              "type": "Microsoft.Common.TextBox",
+              "label": "Managed identity resource ID",
+              "placeholder": "/subscriptions/.../resourceGroups/rg-identity/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-avd-entra-ops",
+              "toolTip": "The full resource ID, not the name. Leave blank to skip all Entra work.",
+              "constraints": {
+                "required": false,
+                "regex": "^$|^\\s*/[sS]ubscriptions/[^/\\s]+/[rR]esource[gG]roups/[^/\\s]+/[pP]roviders/[mM]icrosoft\\.[mM]anaged[iI]dentity/[uU]ser[aA]ssigned[iI]dentities/[^/\\s]+\\s*$",
+                "validationMessage": "Paste the full resource ID of a user-assigned managed identity (/subscriptions/.../resourceGroups/.../providers/Microsoft.ManagedIdentity/userAssignedIdentities/...), or leave blank. Check for leading spaces if you copied it from a terminal."
+              },
+              "visible": true
+            },
+            {
+              "name": "noIdentityNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[empty(steps('identity').entraManagedIdentityId)]",
+              "options": {
+                "icon": "Warning",
+                "text": "With no identity, the deployment cannot create groups, grant admin consent on the storage account's Entra application, or tag it for cloud-only group SIDs. Profiles will not mount until all three are done manually. Supply existing group object IDs below so at least the role assignments are made."
+              }
+            },
+            {
+              "name": "createEntraGroups",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "Create the AVD access groups",
+              "defaultValue": true,
+              "toolTip": "Groups are matched by display name, so redeploying reuses them rather than creating duplicates.",
+              "visible": "[not(empty(steps('identity').entraManagedIdentityId))]"
+            },
+            {
+              "name": "groupNames",
+              "type": "Microsoft.Common.Section",
+              "label": "New groups",
+              "elements": [
+                {
+                  "name": "avdUsersGroupName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Users group name",
+                  "defaultValue": "AVD Users",
+                  "toolTip": "Gets Desktop Virtualization User on each application group, Virtual Machine User Login on the session hosts, and SMB Share Contributor on the profile share.",
+                  "constraints": {
+                    "required": true
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "avdAdminsGroupName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Admins group name",
+                  "defaultValue": "AVD Admins",
+                  "toolTip": "Gets Virtual Machine Administrator Login and SMB Share Elevated Contributor.",
+                  "constraints": {
+                    "required": true
+                  },
+                  "visible": true
+                }
+              ],
+              "visible": "[and(not(empty(steps('identity').entraManagedIdentityId)), steps('identity').createEntraGroups)]"
+            },
+            {
+              "name": "groupIds",
+              "type": "Microsoft.Common.Section",
+              "label": "Existing groups",
               "elements": [
                 {
                   "name": "groupsInfo",
                   "type": "Microsoft.Common.TextBlock",
                   "visible": true,
                   "options": {
-                    "text": "Object IDs, not group names. Leave blank to skip the role assignments and assign access manually later \u2014 but without the users group, the desktop will not appear in anyone's client."
+                    "text": "Object IDs, not names. Leave blank to skip the role assignments — but without the users group the desktop will not appear in anyone's client, and nobody can sign in to a session host."
                   }
                 },
                 {
@@ -875,7 +1288,6 @@
                   "type": "Microsoft.Common.TextBox",
                   "label": "AVD users group object ID",
                   "placeholder": "00000000-0000-0000-0000-000000000000",
-                  "toolTip": "Gets Desktop Virtualization User on each application group, and SMB Share Contributor on the profile share.",
                   "constraints": {
                     "required": false,
                     "regex": "^$|^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$",
@@ -888,7 +1300,6 @@
                   "type": "Microsoft.Common.TextBox",
                   "label": "AVD admins group object ID",
                   "placeholder": "00000000-0000-0000-0000-000000000000",
-                  "toolTip": "Gets SMB Share Elevated Contributor on the profile share, which allows modifying NTFS permissions.",
                   "constraints": {
                     "required": false,
                     "regex": "^$|^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$",
@@ -897,15 +1308,31 @@
                   "visible": true
                 }
               ],
+              "visible": "[or(empty(steps('identity').entraManagedIdentityId), not(steps('identity').createEntraGroups))]"
+            },
+            {
+              "name": "configureEntraKerberos",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "Finish the Entra Kerberos setup on the storage account",
+              "defaultValue": true,
+              "toolTip": "Grants admin consent on the application Azure creates for the storage account, and adds the kdc_enable_cloud_group_sids tag. Both are mandatory for cloud-only identities — without the tag, authentication to the share fails.",
+              "visible": "[not(empty(steps('identity').entraManagedIdentityId))]"
+            },
+            {
+              "name": "setFslogixNtfsPermissions",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "Set NTFS permissions on the profile share",
+              "defaultValue": true,
+              "toolTip": "Runs on the first session host. Azure RBAC decides who reaches the share; NTFS decides what they can do on it, and the defaults let every user open every other user's profile.",
               "visible": true
             },
             {
-              "name": "sessionHostNotice",
+              "name": "mfaNotice",
               "type": "Microsoft.Common.InfoBox",
               "visible": true,
               "options": {
-                "icon": "Info",
-                "text": "Session hosts are not deployed. After this completes, fetch a registration token with 'az desktopvirtualization hostpool retrieve-registration-token' and build hosts against it. The token expires 30 days after deployment."
+                "icon": "Warning",
+                "text": "One step always remains manual: exclude the storage account's Entra application from any Conditional Access policy requiring MFA. Entra Kerberos does not support MFA, and a broad policy produces 'System error 1327' when users load their profile. The application ID appears in the deployment outputs."
               }
             }
           ]
@@ -947,8 +1374,26 @@
         "hostPools": "[steps('avd').hostPools]",
         "avdWorkspaceName": "[steps('avd').avdWorkspaceName]",
         "avdWorkspaceFriendlyName": "[steps('avd').avdWorkspaceFriendlyName]",
-        "avdUsersGroupObjectId": "[steps('avd').identitySection.avdUsersGroupObjectId]",
-        "avdAdminsGroupObjectId": "[steps('avd').identitySection.avdAdminsGroupObjectId]"
+        "avdUsersGroupObjectId": "[if(and(not(empty(steps('identity').entraManagedIdentityId)), steps('identity').createEntraGroups), '', steps('identity').groupIds.avdUsersGroupObjectId)]",
+        "avdAdminsGroupObjectId": "[if(and(not(empty(steps('identity').entraManagedIdentityId)), steps('identity').createEntraGroups), '', steps('identity').groupIds.avdAdminsGroupObjectId)]",
+        "deploySessionHosts": "[steps('avd').deploySessionHosts]",
+        "sessionHostAdminUsername": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.adminUsername, '')]",
+        "sessionHostAdminPassword": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.adminPassword, '')]",
+        "entraManagedIdentityId": "[steps('identity').entraManagedIdentityId]",
+        "createEntraGroups": "[and(not(empty(steps('identity').entraManagedIdentityId)), steps('identity').createEntraGroups)]",
+        "avdUsersGroupName": "[steps('identity').groupNames.avdUsersGroupName]",
+        "avdAdminsGroupName": "[steps('identity').groupNames.avdAdminsGroupName]",
+        "configureEntraKerberos": "[and(not(empty(steps('identity').entraManagedIdentityId)), steps('identity').configureEntraKerberos)]",
+        "setFslogixNtfsPermissions": "[steps('identity').setFslogixNtfsPermissions]",
+        "sessionHostImageSku": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.imageSku, 'win11-25h2-avd-m365')]",
+        "sessionHostImageOffer": "[if(contains(if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.imageSku, 'win11-25h2-avd-m365'), 'm365'), 'office-365', 'windows-11')]",
+        "sessionHostOsDiskType": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.osDiskType, 'StandardSSD_LRS')]",
+        "sessionHostAcceleratedNetworking": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.acceleratedNetworking, true)]",
+        "sessionHostEnrolWithIntune": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.enrolWithIntune, false)]",
+        "configureFslogixOnSessionHosts": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.configureFslogix, false)]",
+        "fslogixProfileSizeMB": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.fslogixProfileSizeMB, 30000)]",
+        "restartSessionHostsAfterFslogix": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.restartAfterFslogix, true)]",
+        "setDesktopFriendlyNames": "[not(empty(steps('identity').entraManagedIdentityId))]"
       }
     }
   }

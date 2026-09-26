@@ -25,6 +25,20 @@ param maxSessionLimit int
 @description('Power hosts on when a user connects. Requires the AVD service principal to hold Desktop Virtualization Power On Contributor on the session host subscription — a one-time step outside this template.')
 param startVMOnConnect bool
 
+@description('''Custom RDP properties, semicolon separated.
+
+targetisaadjoined:i:1 is not optional for this design. Session hosts are
+Entra-joined, and without it a connection from any client that is not Entra
+joined to the same tenant is refused — which includes the web, macOS, iOS and
+Android clients always, and a Windows PC that is merely signed in rather than
+joined. The symptom is a credential prompt that never accepts a correct
+password, with nothing logged that points at the cause.
+
+enablerdsaadauth:i:1 would add single sign-on, but it needs a Kerberos server
+object and a consent step that are outside this template, so it is not set
+here.''')
+param customRdpProperties string = 'targetisaadjoined:i:1;'
+
 @description('Registration token expiry, as an ISO 8601 timestamp. Session hosts must register before it passes.')
 param registrationTokenExpiry string
 
@@ -36,6 +50,7 @@ resource hostPool 'Microsoft.DesktopVirtualization/hostPools@2024-04-03' = {
   location: location
   properties: {
     friendlyName: friendlyName
+    customRdpProperty: customRdpProperties
     hostPoolType: 'Pooled'
     loadBalancerType: 'DepthFirst'
     maxSessionLimit: maxSessionLimit

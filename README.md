@@ -4,14 +4,16 @@ Loop-based rewrite of the AVD landing zone Bicep template. Where v1 had a fixed
 hub and three named spokes, this version takes spokes and subnets as arrays and
 loops over them — one spoke or five, same code.
 
-**Status: deployed and verified.** Everything from v1 is ported, plus NAT
-gateways, multiple host pools, application group user assignment and control
-plane diagnostics. Template spec 1.2.0 has been deployed end to end through the
-portal wizard into North Europe, and every deployment guard returned clean.
+**Status: deployed and verified.** The networking, storage, monitoring and
+control plane layers have been deployed end to end from the portal wizard and
+every deployment guard returned clean. Session hosts and the Entra ID
+automation are newer and are covered by `build`, `lint` and `what-if` only —
+see [Validation status](#validation-status) for exactly what has and has not
+been run against a live tenant.
 
 ## Identity model: cloud-only
 
-This template targets **cloud-only identities**. FSLogix storage will use
+This template targets **cloud-only identities**. FSLogix storage uses
 Microsoft Entra Kerberos, which for cloud-only users needs no domain
 controller for authentication or authorisation. There is therefore no DC
 subnet, no custom VNet DNS, and no on-premises connectivity in this design.
@@ -30,7 +32,9 @@ Two constraints follow from that choice:
 A storage account supports only one identity source, so every host pool in a
 deployment shares this model.
 
-## What it deploys today
+## What it deploys
+
+**Network**
 
 - One hub VNet, always with a GatewaySubnet, plus optional FortiGate NIC
   subnets and AzureBastionSubnet
@@ -43,15 +47,78 @@ deployment shares this model.
 - An optional NAT gateway and public IP per spoke, for outbound internet
   access where there is no firewall
 - Hub-to-spoke and spoke-to-hub peerings for spokes that opt in
+
+**Storage**
+
 - An FSLogix storage account and SMB share, with a private endpoint in the
   AVD spoke and a privatelink DNS zone linked to the hub and every spoke
-- Optional Azure RBAC on the share for AVD user and admin groups
+- Microsoft Entra Kerberos enabled on the account, with admin consent granted
+  and the cloud-group-SIDs tag applied to its Entra application
+- Azure RBAC on the share for the AVD user and admin groups
+- NTFS permissions on the share root, set from the first session host
+
+**Monitoring**
+
 - A Log Analytics workspace, with diagnostics from every VNet, the storage
   account and every AVD control plane resource
+
+**AVD**
+
 - Any number of pooled host pools, each with its own desktop application
   group, all surfaced through a single workspace
-- The Desktop Virtualization User role assigned to the AVD users group on
-  each application group, so desktops are visible without a manual step
+- Session hosts per host pool, built from a gallery image, Entra-joined,
+  optionally enrolled in Intune, and registered with their host pool
+- The Desktop Virtualization User role on each application group, and Virtual
+  Machine User Login on the session hosts, so desktops are both visible and
+  usable without a manual step
+
+**Entra ID**
+
+- The AVD users and admins groups, created if you want them created
+
+## Before you deploy: the Entra bootstrap
+
+Creating Entra groups and finishing the Entra Kerberos setup are Microsoft
+Graph operations. The Azure portal's deployment flow carries no Graph token, so
+a template deployed from a Create blade cannot do either by itself — the
+Microsoft Graph Bicep extension is GA but documented to fail with 401 inside a
+Template Spec, and portal deployments fail with "Insufficient privileges to
+complete the operation".
+
+The way round it is a deployment script running as a **user-assigned managed
+identity**, which does carry an app-only Graph token. That identity is created
+once per tenant:
+
+```
+.\scripts\bootstrap-entra-identity.ps1 -Location northeurope
+```
+
+It prints a resource ID. Paste that into the wizard's **Entra ID** tab, or set
+`entraManagedIdentityId` in the parameters file.
+
+What it grants, and why each one:
+
+| Permission | Needed for |
+|---|---|
+| `Group.ReadWrite.All` | Creating the access groups, and reading first so redeployment does not create duplicates |
+| `Application.ReadWrite.All` | Adding the `kdc_enable_cloud_group_sids` tag to the storage account's application |
+| `DelegatedPermissionGrant.ReadWrite.All` | Granting admin consent on that application |
+| `Reader` (Azure RBAC, subscription) | Not for the work itself — the script container runs `az login --identity` before your script, and that fails when the identity can see no subscription |
+
+These are tenant-wide permissions. Read them before running the script.
+
+**Who can run it:** granting Microsoft Graph app roles specifically requires
+Global Administrator or Privileged Role Administrator. Application
+Administrator is not enough, which catches people out.
+
+**Who can then deploy:** whoever runs the deployment needs **Managed Identity
+Operator** on that identity, as well as their usual rights. Contributor or
+Owner on its resource group both include it.
+
+Leaving `entraManagedIdentityId` empty is supported. The rest of the template
+deploys normally, group object IDs are taken as parameters instead, and the
+Entra work becomes four manual steps. The `entraWorkSkippedNoIdentity` output
+says so.
 
 ## Outbound internet access
 
@@ -81,7 +148,7 @@ behaviour is explicit rather than dependent on the template's API version.
 
 **A spoke with neither path still deploys successfully.** The failure appears
 later, as session hosts that never register. The `spokesWithoutOutbound`
-deployment output lists any spoke in that state — check it before deploying.
+deployment output lists any spoke in that state.
 
 ## Naming
 
@@ -98,17 +165,43 @@ rt-avd              (only when the hub has a firewall)
 
 The hub is the exception — `hubRgName` and `hubVnetName` are set explicitly.
 
+Session host names come from the host pool name, lowercased, hyphens stripped
+and truncated to 11 characters, with an index appended: host pool `desktops`
+produces `desktops-0`, `desktops-1` and so on. Windows caps computer names at
+15 characters, which is where the 11 comes from. Two pools whose names agree in
+their first 11 characters would collide; `duplicateSessionHostPrefixes` flags
+that, and `vmNamePrefix` on a pool overrides it.
+
 ## Structure
 
 ```
 main.bicep                      subscription-scoped entry point
 parameters.example.bicepparam   copy per customer
+uiFormDefinition.json           the portal wizard
 modules/
   hub.bicep                     hub VNet and its optional subnets
   spoke.bicep                   one spoke VNet and its subnets
   peering.bicep                 one peering, used twice per spoke
   nsg.bicep                     AVD or empty NSG
   routeTable.bicep              forced routing through the hub firewall
+  natGateway.bicep              NAT gateway and its public IP
+  storage.bicep                 FSLogix account, share, Entra Kerberos
+  storageRbac.bicep             share-level role assignments
+  storageEntraKerberos.bicep    admin consent and the cloud group SIDs tag
+  fslogixPrivateAccess.bicep    DNS zone, VNet links, private endpoint
+  fslogixNtfsPermissions.bicep  NTFS on the share root, via Run Command
+  logAnalytics.bicep            workspace
+  vnetDiagnostics.bicep         per-VNet diagnostic settings
+  storageDiagnostics.bicep      storage diagnostic settings
+  avdHostPool.bicep             host pool and its registration token
+  avdApplicationGroup.bicep     desktop app group and its user assignment
+  avdWorkspace.bicep            the single workspace
+  sessionHost.bicep             VMs, Entra join, AVD agent registration
+  sessionHostLogin.bicep        Virtual Machine User / Administrator Login
+  entraGroups.bicep             the AVD access groups
+scripts/
+  bootstrap-entra-identity.ps1  one-time per-tenant Graph identity
+  publish-templatespec.ps1      publish the template and its wizard
 ```
 
 ## Defining spokes and subnets
@@ -117,8 +210,8 @@ Two arrays. Spokes:
 
 ```bicep
 param spokes = [
-  { name: 'avd',  addressPrefix: '10.3.0.0/16', role: 'avd',  peerToHub: true }
-  { name: 'prod', addressPrefix: '10.1.0.0/16', role: 'none', peerToHub: true }
+  { name: 'avd',  addressPrefix: '10.3.0.0/16', role: 'avd',  peerToHub: true, natGateway: true }
+  { name: 'prod', addressPrefix: '10.1.0.0/16', role: 'none', peerToHub: true, natGateway: false }
 ]
 ```
 
@@ -130,13 +223,19 @@ Subnets reference their spoke by name:
 
 ```bicep
 param subnets = [
-  { spoke: 'avd',  name: 'hosts',   prefix: '10.3.0.0/24', nsgType: 'avd' }
-  { spoke: 'prod', name: 'servers', prefix: '10.1.0.0/24', nsgType: 'empty' }
+  { spoke: 'avd',  name: 'hosts',   prefix: '10.3.0.0/24', nsgType: 'avd',   useNatGateway: true,  hostsPrivateEndpoints: true }
+  { spoke: 'prod', name: 'servers', prefix: '10.1.0.0/24', nsgType: 'empty', useNatGateway: false, hostsPrivateEndpoints: false }
 ]
 ```
 
-Both arrays are flat — every field is a string, number or boolean — so they can
-be collected by a portal form grid later without nesting.
+Both arrays are flat — every field is a string, number or boolean — so the
+portal form can collect them in a grid without nesting.
+
+Session hosts land in the AVD spoke's first subnet with `nsgType: 'avd'`. That
+is not arbitrary: the AVD rule set exists to document the outbound destinations
+session hosts need, so a subnet carrying it is by definition the session host
+subnet. If there is no such subnet they are skipped, and
+`sessionHostsSkippedNoSubnet` says so.
 
 ## The firewall switch
 
@@ -154,72 +253,266 @@ peering rather than reaching its destination.
 
 When `hubFirewallType` is not `'none'`, `hubFirewallInternalIp` is required.
 
+## Session hosts
+
+Hosts are built per host pool from the `sessionHostCount` and `vmSize` fields
+on each `hostPools` entry. Everything else — image, disk type, local admin
+account — is shared by every pool, because in practice one customer runs one
+image.
+
+Each host gets three things in a fixed order:
+
+1. **The VM**, from a marketplace gallery image, with Trusted Launch enabled
+   and `licenseType: 'Windows_Client'` so the multi-session benefit applies.
+2. **`AADLoginForWindows`**, the Entra join extension, optionally carrying
+   Intune's application ID for automatic enrolment.
+3. **The AVD agent**, via the DSC extension, with `aadJoin: true` and a
+   registration token read straight from the host pool.
+
+Step 3 depends on step 2 and that is not decoration. If the agent installs
+before the Entra join completes, it registers the host as domain-joined and
+sign-in fails with nothing obviously wrong in the AVD blade.
+
+### Images
+
+| | publisher | offer | SKU |
+|---|---|---|---|
+| Multi-session + Microsoft 365 Apps | `microsoftwindowsdesktop` | `office-365` | `win11-25h2-avd-m365` |
+| Multi-session, no Office | `microsoftwindowsdesktop` | `windows-11` | `win11-25h2-avd` |
+
+The Microsoft 365 images are published under the **`office-365` offer**, not
+under `windows-11`. This catches people out regularly. The portal wizard offers
+a single image dropdown and works the offer out from the SKU; in the parameters
+file you have to set both.
+
+All the multi-session images ship FSLogix preinstalled. The binaries, not the
+configuration — profile container settings are still yours to apply.
+
+Only 24H2 and newer are offered, and `sessionHostImageSku` is constrained to
+them. Cloud-only Entra Kerberos does not support older builds, so a 23H2 host
+deploys perfectly and then cannot mount a profile — better to fail validation.
+
+### The DSC artifact URL
+
+`sessionHostArtifactsLocation` points at Microsoft's AVD agent package:
+
+```
+https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration_1.0.02797.442.zip
+```
+
+Microsoft version-stamps this file, publishes no "latest" alias, and does not
+document the current version anywhere. If session host registration starts
+failing, that is the first thing to check. The current value is visible in the
+template the portal generates from **Host pools → Add virtual machines →
+Review + create → Download a template for automation**.
+
+### Registration tokens
+
+The session host module reads the token directly from the host pool with
+`listRegistrationTokens()` and puts it in the DSC extension's protected
+settings. It never passes through a module output, and it is never a deployment
+output — deployment history persists indefinitely, and a registration token is
+a credential.
+
+To add hosts outside this template:
+
+```
+az desktopvirtualization hostpool retrieve-registration-token --resource-group rg-avd --host-pool-name hp-desktops
+```
+
+Redeploying rotates every host pool's token, because the token is declared on
+the host pool resource itself.
+
+## FSLogix share readiness
+
+The template now does almost all of this. With a managed identity supplied it
+creates the account, share, private endpoint and DNS zone, enables Entra
+Kerberos, grants admin consent on the resulting Entra application, tags that
+application for cloud-only group SIDs, assigns Azure RBAC on the share, and
+sets NTFS permissions on the share root from the first session host.
+
+FSLogix itself is configured on each session host too: the profile container
+registry values and `CloudKerberosTicketRetrievalEnabled`, which the host needs
+before it will even request a cloud Kerberos ticket. The gallery images ship
+FSLogix installed but not configured, so without that step a freshly built host
+quietly keeps local profiles.
+
+**One step remains manual, and it always will:**
+
+> Exclude the application named
+> `[Storage Account] <account>.file.core.windows.net` from any Conditional
+> Access policy that requires MFA.
+
+Entra Kerberos does not support MFA. A broad "require MFA for all apps" policy
+produces `System error 1327: Account restrictions are preventing this user from
+signing in` when a user tries to load their profile. The application's client
+ID is in the `storageEntraApplicationId` deployment output. This is a security
+policy change and is deliberately not automated.
+
+### The NTFS permission set
+
+Microsoft's documented set for profile containers:
+
+| Principal | Rights | Applies to |
+|---|---|---|
+| AVD users group | Modify | This folder only |
+| `CREATOR OWNER` | Modify | Subfolders and files only |
+| `BUILTIN\Administrators` | Full control | This folder, subfolders and files |
+
+"This folder only" for users is the important row. It lets a user create their
+own profile folder and stops them opening anyone else's.
+
+Getting there needs a removal as well as three grants. The default ACL on a new
+Azure file share root is **explicit, not inherited** — a share root has no
+parent directory — so `icacls /inheritance:r` removes nothing and still exits
+0. The entry that matters is `NT AUTHORITY\Authenticated Users:(OI)(CI)(M)`,
+which has to be deleted by name or every user keeps Modify on every other
+user's profile while the script reports success. Principals are referenced by
+SID rather than name, because an Entra-joined host may not resolve the built-in
+names reliably this early in its life.
+
+Cloud-only Entra groups have no on-premises SID, so the group's object ID is
+converted to its Entra SID form (`S-1-12-1-...`) on the host and passed to
+`icacls` as a literal SID, rather than relying on name resolution the host may
+not have yet.
+
+The share is mounted with the **storage account key**, which is the only
+credential that bypasses NTFS — exactly what you need to set initial
+permissions on a share nobody can reach. It also means the step does not depend
+on Entra Kerberos having finished.
+
+The trade is that the step needs `storageAllowSharedKeyAccess` true and a
+reachable file endpoint — either the private one or `storagePublicNetworkAccess`
+still `Enabled`. If either is missing the step is skipped rather than attempted,
+and `fslogixNtfsPermissionsSkipped` reports it. Set the permissions, confirm a
+client can mount, and only then close the public path.
+
 ## Deploying
+
+**Deployment is through the template spec and its portal wizard.** That is the
+point of the project — a form anyone can fill in, not a parameters file only
+its author understands. The command line is for validating changes before
+publishing them, not for deploying.
 
 ```
 az login
 az account set --subscription "<subscription>"
 
-az deployment sub what-if --location <region> --template-file main.bicep --parameters parameters.example.bicepparam
+.\scripts\publish-templatespec.ps1 -Location northeurope -Version 1.3.0
 ```
 
-Swap `what-if` for `create` once the plan looks right.
+Then **Template specs** → **avd-landing-zone** → the version → **Deploy**.
+
+Template spec versions are immutable, so every change means a new version. Bump
+`-Version` each time.
+
+### Validating before publishing
+
+The parameters file exists so template changes can be checked without
+publishing a version to find out. It is also the reference for what every
+setting means, and what a pipeline would use.
+
+```
+az deployment sub what-if `
+  --location northeurope `
+  --template-file main.bicep `
+  --parameters parameters.example.bicepparam `
+  --parameters sessionHostAdminPassword='<value>'
+```
+
+The password is supplied on the command line rather than in the file. An empty
+one fails template validation before what-if reaches anything useful.
+
+Role assignments whose name derives from a group object ID come back as
+**unsupported** rather than analysed, because the groups do not exist until the
+deployment script has run and what-if will not guess a resource ID. Five of
+them is normal and correct. Deployment scripts themselves appear as opaque
+resources — what-if cannot evaluate what they do.
 
 Expected resource counts:
 
 | Configuration | Resources |
 |---|---|
-| The example file: 2 spokes, NAT on AVD, storage, monitoring, 1 host pool | ~40 |
+| The example file: 2 spokes, NAT, storage, monitoring, 1 pool, 2 hosts | ~55 |
+| Same with `deploySessionHosts` false | ~42 |
 | Same with `hostPools` empty | ~34 |
 | Same with storage and monitoring off too | 17 |
 
-A NAT gateway adds two resources per spoke (gateway and public IP). Storage
-adds about nine (account, file service, share, DNS zone, one zone link per
-VNet, private endpoint, zone group). Monitoring adds one plus a diagnostic
-setting per VNet and two for storage.
-
-Counts are approximate — what-if sometimes groups sub-resources differently.
+Each session host adds four resources: NIC, VM, Entra join extension and AVD
+agent extension. Counts are approximate — what-if sometimes groups
+sub-resources differently, and deployment scripts each create a transient
+storage account and container instance that are cleaned up afterwards.
 
 ## Validation status
 
 All files compile and lint clean with Bicep CLI 0.47.16. The example parameters
-and both edge cases above validate with `bicep build-params`.
+validate with `bicep build-params`.
 
-Deployed for real from template spec 1.2.0 via the portal wizard: two spokes,
-NAT gateway on the AVD spoke, storage with private endpoint, Log Analytics and
-one host pool, into North Europe. All five outputs returned the expected
-values, both peerings reached Connected, and the privatelink DNS zone linked to
-the hub and every spoke.
+**Deployed and verified against a live tenant:** hub, spokes, subnets, NSGs,
+NAT gateway, peerings, storage account with private endpoint and DNS, Log
+Analytics with diagnostics, host pool, application group and workspace. All
+guard outputs returned clean.
 
-What that run did **not** exercise: FortiGate hub (`hubFirewallType` was
-`'none'`, so no NVA subnets and no route tables), the Bastion subnet, more than
-one host pool, and the Entra group role assignments — the group object IDs were
-left blank.
+**Not yet exercised against a live tenant:** session hosts, the Entra bootstrap
+and group creation, the Entra Kerberos consent and tagging script, and the NTFS
+Run Command. Also untested: the FortiGate hub path, the Bastion subnet, and
+more than one host pool.
 
-## FSLogix share readiness
+`what-if` and `build` catch template errors. They do not catch quota, image
+availability, tenant policy, or anything a deployment script does at runtime —
+and note that `what-if` cannot evaluate deployment scripts at all.
 
-The template creates the storage account, share, private endpoint, DNS zone
-and Azure RBAC. **The share is not usable by FSLogix yet.**
+### Known runtime risks
 
-Two things remain, neither of which Bicep can do:
+- **`MicrosoftGraphRequestFailed` when enabling Entra Kerberos.** Caused by a
+  tenant-wide app management policy restricting `passwordAddition` or
+  `symmetricKeyAddition`, which blocks the Storage resource provider from
+  adding its own credential. The fix is an app management policy exception
+  assigned to the Storage RP's service principal, app ID
+  `a6aa9161-5291-40bb-8c5c-923b567bee3b`. This affects the portal, CLI and
+  PowerShell identically — it is not specific to ARM.
+- **A half-failed Entra Kerberos enablement does not self-heal.** If the first
+  attempt errors part way, the backend provisioning state can be left broken,
+  later attempts report success without creating the service principal, and it
+  takes a support ticket to clear.
+- **Deployment scripts create a transient storage account** with public network
+  access. An Azure Policy denying that will block them.
 
-1. **Enable Microsoft Entra Kerberos** on the storage account. Azure RBAC
-   controls who can reach the share; it does not authenticate SMB.
-2. **Set NTFS permissions** on the share root from a client that has mounted
-   it. Microsoft publishes the recommended permission set for FSLogix
-   profile containers.
+## Tearing down
 
-Until both are done, session hosts will not mount profiles.
+Deleting the resource groups is not enough. **Delete the session hosts' device
+objects from Microsoft Entra ID as well**, or the next deployment fails in the
+most misleading way this template has produced.
 
-Also remember the cloud-only constraints: Entra-joined session hosts on
-Windows 11 24H2+ or Server 2025, and MFA disabled on the storage account's
-Entra application.
+Entra ID -> Devices -> All devices, and delete the entries matching your
+session host names (`desktops-0`, `desktops-1` and so on).
+
+Why it matters: VM names are derived from the host pool name and are therefore
+identical on every rebuild. A device object left behind by the previous
+deployment still owns that hostname, so the new VM's join is refused with
+`error_hostname_duplicate`. The `AADLoginForWindows` extension **reports
+success anyway** — the deployment goes green, the session hosts appear in the
+host pool, and users get a credential prompt that never accepts a correct
+password. `dsregcmd /status` on the host shows `AzureAdJoined : NO`.
+
+Keep the identity and template spec resource groups; everything else goes:
+
+```
+az group delete --name rg-avd --yes --no-wait
+az group delete --name rg-hub --yes --no-wait
+az group delete --name rg-storage --yes --no-wait
+az group delete --name rg-mgmt --yes --no-wait
+```
+
+The Entra groups created by the deployment are left alone deliberately — they
+may hold membership you want to keep. Delete them by hand if you want a clean
+tenant.
 
 ## Deployment guards
 
-Five outputs flag configurations that deploy successfully but do not work.
-None of them block the deployment — Bicep has no non-experimental assertion
-mechanism — so read them on the deployment's Outputs blade once it finishes.
+Outputs that flag configurations which deploy successfully but do not work.
+None block the deployment — Bicep has no non-experimental assertion mechanism —
+so read them on the deployment's Outputs blade once it finishes.
 
 | Output | Meaning |
 |---|---|
@@ -227,48 +520,29 @@ mechanism — so read them on the deployment's Outputs blade once it finishes.
 | `storageHasNoPrivateEndpoint` | Storage deployed but no subnet was flagged `hostsPrivateEndpoints`, so the share is reachable only over its public endpoint. |
 | `resourceGroupNameCollisions` | A spoke named `storage` or `mgmt` produces the same resource group name as the shared storage or monitoring group. |
 | `hostPoolsSkippedNoAvdSpoke` | Host pools were defined but no spoke has `role: 'avd'`, so the control plane was skipped entirely. |
+| `sessionHostsSkippedNoSubnet` | Session hosts were requested but the AVD spoke has no subnet with `nsgType: 'avd'` to put them in. |
+| `duplicateSessionHostPrefixes` | Two host pools produce the same VM name prefix. Set `vmNamePrefix` on one. |
+| `entraWorkSkippedNoIdentity` | Entra work was requested but no managed identity was supplied, so groups, consent and the manifest tag were all skipped. |
+| `fslogixNtfsPermissionsSkipped` | NTFS permissions could not be set — no session host to run from, or no users group. Until they are, every user can read every other user's profile. |
 | `bastionPrefixValid` | `false` when `bastionSubnetPrefix` is smaller than `/26`, which Azure rejects. |
 
-The first four should be empty or false; `bastionPrefixValid` should be true.
+Everything should be empty or false except `bastionPrefixValid`, which should
+be true.
 
 **These are deployment outputs, not what-if output.** What-if reports resource
-changes only; outputs are evaluated during a real deployment. So these appear
-after you deploy, not before. They save you troubleshooting time, but they are
-not a pre-flight check.
+changes only; outputs are evaluated during a real deployment. They save
+troubleshooting time; they are not a pre-flight check.
 
-## Session hosts
-
-The template does not deploy session hosts — VM size, image, and applications
-vary too much per customer. What it gives you is a host pool ready to receive
-them.
-
-Fetch a registration token when you deploy hosts:
-
-```
-az desktopvirtualization hostpool retrieve-registration-token --resource-group rg-avd --host-pool-name hp-desktops
-```
-
-The token is deliberately not a deployment output: deployment history persists
-indefinitely, and a registration token is a credential. It expires 30 days
-after deployment by default.
-
-Session hosts must be Entra-joined and running Windows 11 24H2 or newer, or
-Server 2025 — the cloud-only Entra Kerberos requirement.
+Two other outputs are there to be used rather than checked:
+`storageEntraApplicationId` is what you search for when excluding the storage
+app from MFA, and `avdUsersGroupId` / `avdAdminsGroupId` report the groups that
+were created.
 
 ## Portal wizard
 
-`uiFormDefinition.json` gives the template a Create blade in the Azure portal,
-so you fill in a wizard instead of editing a parameters file.
-
-Publish it as a template spec:
-
-```
-.\scripts\publish-templatespec.ps1 -Location northeurope
-```
-
-Then in the portal: **Template specs** -> **avd-landing-zone** -> **Deploy**.
-
-The wizard has seven tabs:
+`uiFormDefinition.json` is what gives the template its Create blade, and it is
+the intended way in. The eight tabs collect the same values the parameters file
+holds, with validation, dropdowns and grids instead of hand-edited arrays.
 
 | Tab | What it collects |
 |---|---|
@@ -278,15 +552,16 @@ The wizard has seven tabs:
 | Subnets | A grid — one row per subnet, matched to a spoke by name |
 | Storage | FSLogix account and private endpoint, or off |
 | Monitoring | Log Analytics, or off |
-| AVD | A grid of host pools, workspace names, Entra group IDs |
+| AVD | Host pools, desktop names, workspace, session host image, size, local admin, FSLogix |
+| Entra ID | The managed identity, group creation, Kerberos setup, NTFS |
 
 Adding a row to the Spokes grid adds a resource group, VNet, peerings and
 optionally a NAT gateway. Adding a row to Host pools adds a host pool,
-application group and workspace entry. Same arrays as the parameters file,
-just collected through a form.
+application group, workspace entry and its session hosts. Same arrays as the
+parameters file, just collected through a form.
 
-Republish after any change to `main.bicep` or the form — bump `-Version`
-each time, since template spec versions are immutable.
+Republish after any change to `main.bicep` **or** the form. A template spec
+version bundles both, so a form-only change still needs a new version.
 
 ### Editing the form
 
@@ -294,10 +569,11 @@ Test changes in the [Form view sandbox](https://aka.ms/form/sandbox) before
 republishing. It renders the JSON live and reports schema errors, which is
 considerably faster than publishing and clicking through.
 
-Ten parameters are deliberately not exposed in the wizard — TLS version,
-shared key access, public network access, retention SKU and similar. They keep
-their defaults from `main.bicep`. Anyone needing to change those should use
-the parameters file directly rather than the portal.
+Eighteen parameters are deliberately not exposed — TLS version, shared key
+access, public network access, retention SKU, the DSC artifact URL, the
+Entra Kerberos and default share permission switches, and similar. They keep
+their defaults from `main.bicep`. Anyone needing to change those should use the
+parameters file directly.
 
 ## Known limitations
 
@@ -306,21 +582,34 @@ the parameters file directly rather than the portal.
 - Cloud-only identities only. Hybrid environments needing AD DS Kerberos, a
   domain controller, custom VNet DNS or on-premises connectivity are not
   supported by this design.
+- The Entra work needs a bootstrap identity with tenant-wide Graph
+  permissions. There is no way round this from a portal Create blade — the
+  Microsoft Graph Bicep extension does not work in one, and Microsoft has an
+  open issue with no committed date.
+- Excluding the storage application from MFA Conditional Access is always
+  manual.
 - FortiGate is the only NVA layout offered. Azure Firewall would need a
   fixed-name `AzureFirewallSubnet` and is not implemented.
 - The AVD NSG rules document required outbound destinations; they do not
   restrict egress. Azure's default `AllowInternetOutBound` still applies.
 - Empty NSGs are attachment points, not segmentation.
 - The Bastion `/26` minimum is surfaced as the `bastionPrefixValid` output
-  rather than failing the deployment. Check it if the subnet is rejected.
+  rather than failing the deployment.
 - A spoke with no outbound path deploys successfully and fails at runtime.
-  `spokesWithoutOutbound` flags it, but nothing blocks the deployment —
-  Bicep has no non-experimental assertion mechanism.
-- NAT gateways are deployed as regional, not zonal. A zonal NAT gateway only
-  serves resources in its own zone; the module accepts a `zone` parameter but
-  `main.bicep` does not currently expose it.
-- Does not deploy session hosts, Bastion, or backup.
+- NAT gateways are deployed as regional, not zonal.
+- Session hosts are not zone-distributed and have no availability set. For a
+  pooled deployment that matters less than it would for single-session, but it
+  is a gap.
+- No scaling plan. Hosts run until you stop them.
+- No image pipeline. Hosts come from the marketplace gallery image as-is;
+  applications beyond Microsoft 365 Apps are yours to deploy.
+- Session host names are deterministic, so a rebuild collides with the Entra
+  device objects left by the previous deployment. See Tearing down.
+- Share RBAC is granted at the storage account, not the share. A second file
+  share on that account would inherit it.
+- Adding hosts to an existing pool needs `startIndex` on the session host
+  module, which `main.bicep` does not currently expose — raising
+  `sessionHostCount` and redeploying rebuilds from index 0 and collides.
 - Pooled host pools only. Personal (1:1) host pools are not supported.
 - Desktop application groups only. RemoteApp is not implemented.
-- Redeploying rotates every host pool's registration token, because the token
-  is declared on the host pool resource itself.
+- Does not deploy Bastion hosts or backup.

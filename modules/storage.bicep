@@ -5,10 +5,12 @@
 // deployment shares the same identity model — which for this template is
 // cloud-only Microsoft Entra Kerberos.
 //
-// IMPORTANT: this creates the infrastructure only. The share is not usable
-// by FSLogix until Entra Kerberos is enabled on the account and NTFS
-// permissions are set on the share root. Neither is done here — see the
-// README.
+// Setting directoryServiceOptions to AADKERB here makes the Storage resource
+// provider create an application registration for the account. That
+// application still needs admin consent and the kdc_enable_cloud_group_sids
+// tag before anyone can mount the share — storageEntraKerberos.bicep does
+// both. NTFS permissions on the share root are set separately again, from a
+// session host, because they need a mounted client.
 //
 // Security settings are all parameterised rather than defaulted, so the
 // values are visible in the customer's parameters file instead of hidden
@@ -74,6 +76,24 @@ param publicNetworkAccess string
 ])
 param largeFileSharesState string
 
+@description('''Enable Microsoft Entra Kerberos for Azure Files. A storage account
+supports exactly one identity source, so this is an account-wide decision that every
+host pool in the deployment inherits. Off leaves the account with no SMB identity
+source at all, which means FSLogix cannot authenticate to the share.''')
+param enableEntraKerberos bool = true
+
+@description('''Share-level permission granted to every authenticated identity, as a
+floor beneath the per-group role assignments. \'None\' is the safe default: access is
+then governed solely by the explicit role assignments in storageRbac.bicep. Setting
+anything else applies to every share in the account and cannot be scoped.''')
+@allowed([
+  'None'
+  'StorageFileDataSmbShareReader'
+  'StorageFileDataSmbShareContributor'
+  'StorageFileDataSmbShareElevatedContributor'
+])
+param defaultSharePermission string = 'None'
+
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
   location: location
@@ -89,6 +109,14 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowSharedKeyAccess: allowSharedKeyAccess
     publicNetworkAccess: publicNetworkAccess
     largeFileSharesState: largeFileSharesState
+    azureFilesIdentityBasedAuthentication: enableEntraKerberos
+      ? {
+          directoryServiceOptions: 'AADKERB'
+          defaultSharePermission: defaultSharePermission
+        }
+      : {
+          directoryServiceOptions: 'None'
+        }
   }
 }
 

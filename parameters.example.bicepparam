@@ -209,12 +209,59 @@ param storageLargeFileSharesState = 'Enabled'
 
 param fslogixPrivateEndpointName = 'pe-fslogix-file'
 
-// Entra ID group object IDs for share access. Empty strings skip the role
-// assignments, so the template deploys before the groups exist.
-//   users  -> SMB Share Contributor (read/write profiles)
-//   admins -> SMB Share Elevated Contributor (also modify NTFS ACLs)
-// These control who can reach the share. NTFS permissions inside it are a
-// separate manual step.
+// Microsoft Entra Kerberos. This is what lets FSLogix authenticate to the
+// share with cloud-only identities. Setting it here makes the Storage resource
+// provider create an application registration for the account; the Entra
+// section below finishes the job.
+param storageEnableEntraKerberos = true
+
+// Share-level permission for every authenticated identity, beneath the
+// per-group assignments below. 'None' means access is governed solely by those
+// assignments, which is what you want. Anything else applies to every share in
+// the account and cannot be scoped to one.
+param storageDefaultSharePermission = 'None'
+
+// Set NTFS permissions on the share root from the first session host, using
+// Microsoft's documented profile container permission set. Azure RBAC decides
+// who reaches the share; NTFS decides what they can do once they are on it,
+// and the defaults let every user open every other user's profile.
+param setFslogixNtfsPermissions = true
+
+// -----------------------------------------------------------------------------
+// ENTRA ID
+// -----------------------------------------------------------------------------
+// The Azure portal's deployment flow carries no Microsoft Graph token, so a
+// template deployed from a Create blade cannot create groups or finish the
+// Entra Kerberos setup by itself. A deployment script running as a
+// user-assigned managed identity can.
+//
+// Create that identity once per tenant:
+//   .\scripts\bootstrap-entra-identity.ps1 -Location northeurope
+// then paste the resource ID it prints here.
+//
+// Leave empty to skip all Entra work and supply group object IDs by hand.
+
+param entraManagedIdentityId = ''
+
+// Create the AVD access groups rather than supplying their object IDs.
+// Requires entraManagedIdentityId. Groups are matched by display name, so
+// redeploying reuses them instead of creating duplicates.
+param createEntraGroups = false
+
+param avdUsersGroupName = 'AVD Users'
+param avdAdminsGroupName = 'AVD Admins'
+
+// Grant admin consent and apply the kdc_enable_cloud_group_sids tag to the
+// storage account's application. Both are mandatory for cloud-only Entra
+// Kerberos — without the tag, Microsoft's wording is that authentication
+// fails. Requires entraManagedIdentityId.
+param configureEntraKerberos = true
+
+// Used only when createEntraGroups is false.
+//   users  -> SMB Share Contributor (read/write profiles), Desktop
+//             Virtualization User on the app group, Virtual Machine User Login
+//   admins -> SMB Share Elevated Contributor, Virtual Machine Administrator
+//             Login
 param avdUsersGroupObjectId = ''
 param avdAdminsGroupObjectId = ''
 
@@ -255,6 +302,17 @@ param logAnalyticsSku = 'PerGB2018'
 //                    service principal to hold Desktop Virtualization Power
 //                    On Contributor on the subscription — a one-time manual
 //                    step. Leave false until that is done.
+//   sessionHostCount session hosts to build for this pool. Optional — omit
+//                    or set 0 to create the pool with no hosts.
+//   vmSize           session host size. Only used when sessionHostCount > 0.
+//   desktopFriendlyName  what users see instead of "SessionDesktop" in their
+//                    client. Optional; omit to leave it as SessionDesktop.
+//                    Needs entraManagedIdentityId — AVD has no ARM property
+//                    for this, so it is done with a REST call.
+//   vmNamePrefix     optional. Defaults to the pool name, lowercased, with
+//                    hyphens stripped, truncated to 11 characters. Set it
+//                    explicitly if two pools would truncate to the same
+//                    thing — duplicateSessionHostPrefixes flags that.
 //
 // The control plane lands in the AVD spoke's resource group, so one spoke
 // must have role = 'avd'.
@@ -265,6 +323,9 @@ param hostPools = [
     friendlyName: 'Desktops'
     maxSessionLimit: 10
     startVMOnConnect: false
+    sessionHostCount: 2
+    vmSize: 'Standard_D4as_v4'
+    desktopFriendlyName: 'Finance Desktop'
   }
 ]
 
@@ -275,6 +336,80 @@ param avdWorkspaceFriendlyName = 'AVD Workspace'
 // Leave it alone unless you need a different window.
 //
 // The token is not a deployment output — deployment history persists, and a
-// registration token is a credential. Fetch it when deploying session hosts:
+// registration token is a credential. The session host module reads it
+// directly from the host pool and puts it in the DSC extension's
+// protectedSettings, so it never passes through an output at all. Fetch it
+// manually only if you are adding hosts outside this template:
 //   az desktopvirtualization hostpool retrieve-registration-token `
 //     --resource-group rg-avd --host-pool-name hp-desktops
+
+// -----------------------------------------------------------------------------
+// SESSION HOSTS
+// -----------------------------------------------------------------------------
+
+// false builds the control plane with no VMs, whatever sessionHostCount says
+// on each pool above. Useful when hosts come from a separate image pipeline.
+param deploySessionHosts = true
+
+// Break-glass local administrator on each host. Users sign in with their
+// Entra credentials, not this account. Azure rejects 'administrator',
+// 'admin', 'user', 'guest' and 'root'.
+//
+// Do NOT commit a real password. Supply it at deploy time instead:
+//   az deployment sub create ... --parameters sessionHostAdminPassword='<value>'
+param sessionHostAdminUsername = 'avdadmin'
+param sessionHostAdminPassword = ''
+
+// Windows 11 Enterprise multi-session 25H2 with Microsoft 365 Apps.
+//
+// The M365 images are published under the 'office-365' OFFER, not under
+// 'windows-11'. For the equivalent without M365 Apps:
+//   sessionHostImageOffer = 'windows-11'
+//   sessionHostImageSku   = 'win11-25h2-avd'
+param sessionHostImagePublisher = 'microsoftwindowsdesktop'
+param sessionHostImageOffer = 'office-365'
+param sessionHostImageSku = 'win11-25h2-avd-m365'
+param sessionHostImageVersion = 'latest'
+
+param sessionHostOsDiskType = 'StandardSSD_LRS'
+
+// Accelerated networking. Not supported by B-series sizes, and an
+// unsupported size fails the deployment outright rather than degrading.
+param sessionHostAcceleratedNetworking = true
+
+// Enrol the hosts in Intune during the Entra join. Multi-session hosts
+// enrol with device credentials and need AVD agent 1.0.2944.1400 or newer.
+param sessionHostEnrolWithIntune = false
+
+// The AVD DSC package that installs the agent and bootloader. Microsoft
+// version-stamps this file and does not publish the current version in their
+// documentation, so it is left at the template default unless you have a
+// newer one. See the README.
+// param sessionHostArtifactsLocation = '...'
+
+// -----------------------------------------------------------------------------
+// FSLOGIX ON THE SESSION HOSTS
+// -----------------------------------------------------------------------------
+
+// The gallery images ship FSLogix installed but NOT configured — the binaries
+// are there and nothing points them at a share, which is why a freshly built
+// host quietly keeps local profiles. This sets the profile container registry
+// values and enables cloud Kerberos ticket retrieval, without which the host
+// cannot authenticate to Azure Files at all.
+//
+// Skipped automatically when deployStorage is false.
+param configureFslogixOnSessionHosts = true
+
+// A ceiling, not an allocation. The container grows as the profile does.
+param fslogixProfileSizeMB = 30000
+
+// CloudKerberosTicketRetrievalEnabled is read by LSA at boot, so a host that is
+// not restarted cannot authenticate to the share. Set false only if you are
+// restarting the hosts yourself.
+param restartSessionHostsAfterFslogix = true
+
+// Apply desktopFriendlyName from the host pool rows above. Requires
+// entraManagedIdentityId; the rename is a REST call from a deployment script,
+// which the template grants Desktop Virtualization Application Group
+// Contributor on the AVD resource group to make.
+param setDesktopFriendlyNames = true

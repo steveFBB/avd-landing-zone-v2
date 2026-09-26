@@ -1,0 +1,16 @@
+# Real customer parameter files (never committed)
+parameters.[!e]*.bicepparam
+
+# Bicep build artifacts — main.json and friends are generated, not source.
+# The portal form IS source, so it is excluded from this rule.
+*.json
+!uiFormDefinition.json
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local secrets
+*.env
+*.secrets
