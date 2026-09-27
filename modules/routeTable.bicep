@@ -6,6 +6,9 @@
 // spoke-to-spoke traffic follows the VNet peering directly and bypasses
 // the firewall entirely, which defeats the point of having one.
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 param routeTableName string
 
@@ -14,6 +17,7 @@ param firewallInternalIp string
 
 resource routeTable 'Microsoft.Network/routeTables@2024-01-01' = {
   name: routeTableName
+  tags: tags
   location: location
   properties: {
     disableBgpRoutePropagation: false

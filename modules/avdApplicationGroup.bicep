@@ -9,6 +9,9 @@
 // see it in the client — which was a gap in v1 that had to be fixed by hand
 // after every deployment.
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 param applicationGroupName string
 param friendlyName string
@@ -29,6 +32,7 @@ var desktopVirtualizationUserRoleId = '1d18fff3-a72a-46b5-b4a9-0b38a3cd7e63'
 
 resource appGroup 'Microsoft.DesktopVirtualization/applicationGroups@2024-04-03' = {
   name: applicationGroupName
+  tags: tags
   location: location
   properties: {
     friendlyName: friendlyName

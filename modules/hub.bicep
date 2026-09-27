@@ -17,16 +17,23 @@
 // dependsOn, because Azure locks the VNet during each subnet write and
 // rejects parallel subnet operations on the same VNet.
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 param vnetName string
 param addressPrefix string
 
 param gatewaySubnetPrefix string
 
-@description('Hub firewall type. \'none\' creates no NVA subnets; \'fortigate\' creates the four FortiGate NIC subnets.')
+@description('''Hub firewall type.
+  none          no firewall subnets at all
+  fortigate     the four FortiGate NIC subnets, for an appliance you deploy yourself
+  azureFirewall AzureFirewallSubnet, plus AzureFirewallManagementSubnet on the Basic tier''')
 @allowed([
   'none'
   'fortigate'
+  'azureFirewall'
 ])
 param firewallType string
 
@@ -36,6 +43,21 @@ param fgtInternalPrefix string = ''
 param fgtHaPrefix string = ''
 param fgtMgmtPrefix string = ''
 
+@description('''Prefix for AzureFirewallSubnet. The name is fixed by Azure and the
+prefix must be /26 or larger. A /26 is enough at any scale — the firewall provisions
+extra instances inside it as it scales, and it never needs enlarging.''')
+param azureFirewallSubnetPrefix string = ''
+
+@description('''Prefix for AzureFirewallManagementSubnet, /26 or larger.
+
+Only used on the Basic tier, where a management NIC is mandatory rather than optional —
+Microsoft separates their management traffic from customer traffic because Basic has
+limited capacity. Standard and Premium do not need it.''')
+param azureFirewallManagementSubnetPrefix string = ''
+
+@description('Firewall tier. Basic is the only one that requires the management subnet.')
+param azureFirewallTier string = 'Standard'
+
 @description('Create AzureBastionSubnet in the hub. The subnet itself only — no Bastion host is deployed by this template.')
 param deployBastionSubnet bool = false
 
@@ -43,6 +65,18 @@ param deployBastionSubnet bool = false
 param bastionSubnetPrefix string = ''
 
 var deployFgtSubnets = firewallType == 'fortigate'
+var deployAzureFirewallSubnet = firewallType == 'azureFirewall'
+var deployAzureFirewallMgmtSubnet = deployAzureFirewallSubnet && azureFirewallTier == 'Basic'
+
+// Azure rejects either firewall subnet below /26, the same way it rejects an
+// undersized Bastion subnet.
+var azureFirewallMaskOk = (deployAzureFirewallSubnet && !empty(azureFirewallSubnetPrefix))
+  ? int(split(azureFirewallSubnetPrefix, '/')[1]) <= 26
+  : true
+
+var azureFirewallMgmtMaskOk = (deployAzureFirewallMgmtSubnet && !empty(azureFirewallManagementSubnetPrefix))
+  ? int(split(azureFirewallManagementSubnetPrefix, '/')[1]) <= 26
+  : true
 
 // Azure rejects an AzureBastionSubnet smaller than /26. Catch it here with
 // a clear message rather than letting the deployment fail on a generic
@@ -53,6 +87,7 @@ var bastionMaskOk = deployBastionSubnet
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
+  tags: tags
   location: location
   properties: {
     addressSpace: {
@@ -126,6 +161,40 @@ resource snetFgtMgmt 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if
 }
 
 //
+// Azure Firewall subnets — names fixed by Azure, /26 minimum
+//
+resource snetAzureFirewall 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployAzureFirewallSubnet) {
+  parent: vnet
+  name: 'AzureFirewallSubnet'
+  properties: {
+    addressPrefix: azureFirewallSubnetPrefix
+  }
+  dependsOn: [
+    snetGateway
+    snetFgtExternal
+    snetFgtInternal
+    snetFgtHa
+    snetFgtMgmt
+  ]
+}
+
+resource snetAzureFirewallMgmt 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployAzureFirewallMgmtSubnet) {
+  parent: vnet
+  name: 'AzureFirewallManagementSubnet'
+  properties: {
+    addressPrefix: azureFirewallManagementSubnetPrefix
+  }
+  dependsOn: [
+    snetGateway
+    snetFgtExternal
+    snetFgtInternal
+    snetFgtHa
+    snetFgtMgmt
+    snetAzureFirewall
+  ]
+}
+
+//
 // AzureBastionSubnet — name is fixed by Azure, /26 minimum
 //
 resource snetBastion 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployBastionSubnet) {
@@ -140,6 +209,8 @@ resource snetBastion 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if
     snetFgtInternal
     snetFgtHa
     snetFgtMgmt
+    snetAzureFirewall
+    snetAzureFirewallMgmt
   ]
 }
 
@@ -149,3 +220,9 @@ output vnetName string = vnet.name
 // Surfaces the Bastion prefix check as a deployment output rather than
 // failing silently. main.bicep asserts on this.
 output bastionPrefixValid bool = bastionMaskOk
+
+@description('False when AzureFirewallSubnet is smaller than /26, which Azure rejects.')
+output azureFirewallPrefixValid bool = azureFirewallMaskOk
+
+@description('False when AzureFirewallManagementSubnet is smaller than /26. Only meaningful on the Basic tier.')
+output azureFirewallMgmtPrefixValid bool = azureFirewallMgmtMaskOk

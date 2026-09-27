@@ -7,6 +7,9 @@
 // All host pools' application groups are referenced by this single
 // workspace, which is why it is created after them.
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 param workspaceName string
 param friendlyName string
@@ -19,6 +22,7 @@ param logAnalyticsWorkspaceId string = ''
 
 resource workspace 'Microsoft.DesktopVirtualization/workspaces@2024-04-03' = {
   name: workspaceName
+  tags: tags
   location: location
   properties: {
     friendlyName: friendlyName

@@ -1,15 +1,27 @@
 # AVD Landing Zone (v2)
 
+**Repository version: 0.3.** See [CHANGELOG.md](CHANGELOG.md)
+for what each version contains. Day-to-day iteration publishes over `dev`;
+numbered versions are cut only for milestones, and 1.0.0 is reserved for the
+first release fit for a customer.
+
 Loop-based rewrite of the AVD landing zone Bicep template. Where v1 had a fixed
 hub and three named spokes, this version takes spokes and subnets as arrays and
 loops over them — one spoke or five, same code.
 
-**Status: deployed and verified.** The networking, storage, monitoring and
-control plane layers have been deployed end to end from the portal wizard and
-every deployment guard returned clean. Session hosts and the Entra ID
-automation are newer and are covered by `build`, `lint` and `what-if` only —
-see [Validation status](#validation-status) for exactly what has and has not
-been run against a live tenant.
+> **This template uses Microsoft Entra Kerberos with cloud-only identities,
+> which Microsoft currently documents as Preview.** Hybrid identities with
+> Entra Kerberos are generally available; cloud-only is not. Cloud-only is also
+> supported in Azure Public only — not US Gov, not China. That matters
+> commercially as much as technically, so raise it with a customer before
+> committing to this design.
+
+**Status: core infrastructure deployed and verified; session host and Entra
+automation pending full live validation.** The networking, storage, monitoring
+and control plane layers have been deployed end to end from the portal wizard
+with every guard clean. Session hosts, the Entra automation, Azure Firewall,
+Insights and the alerts have had `build`, `lint` and `what-if` only — and those
+are the riskier halves. See [Validation status](#validation-status).
 
 ## Identity model: cloud-only
 
@@ -20,10 +32,22 @@ subnet, no custom VNet DNS, and no on-premises connectivity in this design.
 
 Two constraints follow from that choice:
 
-- **Session hosts must be Entra-joined**, and must run Windows 11 Enterprise
-  or Pro 24H2 or newer, or Windows Server 2025 with current cumulative
-  updates. Cloud-only Entra Kerberos does not support older builds — hybrid
-  identities are more permissive, but hybrid is out of scope here.
+- **Session hosts must be Entra-joined**, and must run Windows 11 24H2 or
+  later **at or above Microsoft's documented minimum cumulative update**. The
+  version alone is not enough:
+
+  | Version | Minimum KB | Minimum build |
+  |---|---|---|
+  | Windows 11 24H2 | KB5079391 | 26100.8116 |
+  | Windows 11 25H2 | KB5079391 | 26200.8116 |
+  | Windows 11 26H1 | KB5079489 | 28000.1764 |
+  | Windows Server 2025 | latest cumulative update | — |
+
+  A freshly deployed marketplace image does **not** necessarily meet this, and
+  the template sets `enableAutomaticUpdates: false` with `patchMode: Manual`
+  deliberately — controlled image management, which assumes an image or patch
+  pipeline exists elsewhere. This template does not provide one. Check the
+  build on a new host before concluding that FSLogix is broken.
 - **MFA must be disabled on the storage account's Entra application.** Not on
   users — on the app registration Azure creates for the storage account. A
   broad "require MFA for all apps" Conditional Access policy will break
@@ -40,8 +64,8 @@ deployment shares this model.
   subnets and AzureBastionSubnet
 - Any number of spoke VNets, each in its own resource group
 - Any number of subnets, assigned to spokes by name
-- An NSG per subnet — either the documented AVD outbound allow rules or an
-  empty attachment point
+- An NSG per subnet — either a set of informational service-tag rules for AVD,
+  or an empty attachment point
 - A route table per spoke when the hub has a firewall, with default and
   RFC1918 routes pointing at it
 - An optional NAT gateway and public IP per spoke, for outbound internet
@@ -60,7 +84,12 @@ deployment shares this model.
 **Monitoring**
 
 - A Log Analytics workspace, with diagnostics from every VNet, the storage
-  account and every AVD control plane resource
+  account, the Azure Firewall and every AVD control plane resource
+- Azure Monitor Agent on each session host, with a data collection rule
+  carrying Microsoft's AVD Insights counter and event set including both
+  FSLogix channels
+- An action group and six alerts: session host availability, connection failure
+  rate, FSLogix errors, disk space, CPU and memory
 
 **AVD**
 
@@ -75,6 +104,16 @@ deployment shares this model.
 **Entra ID**
 
 - The AVD users and admins groups, created if you want them created
+
+**Everywhere**
+
+- Tags on every resource that supports them, and on the resource groups.
+  Subnets, peerings, role assignments, diagnostic settings and data collection
+  rule associations do not take tags — an Azure limitation, so coverage is
+  never quite complete.
+- A session host time zone, and separately time zone redirection so each
+  session adopts the time zone of the client connecting to it. Different
+  mechanisms; they combine.
 
 ## Before you deploy: the Entra bootstrap
 
@@ -241,17 +280,54 @@ subnet. If there is no such subnet they are skipped, and
 
 `hubFirewallType` drives three things at once, so they cannot drift apart:
 
-| | `'none'` | `'fortigate'` |
-|---|---|---|
-| Hub NVA subnets | not created | four FortiGate NIC subnets |
-| Spoke route tables | not created | one per spoke, default + RFC1918 via the firewall |
-| Peering forwarded traffic | disabled | enabled in both directions |
+| | `'none'` | `'fortigate'` | `'azureFirewall'` |
+|---|---|---|---|
+| Hub subnets | none | four FortiGate NIC subnets | `AzureFirewallSubnet`, plus `AzureFirewallManagementSubnet` on Basic |
+| The appliance | — | yours to deploy | deployed, with an AVD egress policy |
+| Firewall IP for routes | — | `hubFirewallInternalIp`, by hand | read from the resource |
+| Spoke route tables | not created | one per spoke, default + RFC1918 via the firewall | same |
+| Peering forwarded traffic | disabled | enabled in both directions | enabled in both directions |
 
 The last row matters: without forwarded traffic allowed on both sides of a
 peering, spoke-to-spoke traffic forwarded by the firewall is dropped at the
 peering rather than reaching its destination.
 
-When `hubFirewallType` is not `'none'`, `hubFirewallInternalIp` is required.
+`hubFirewallInternalIp` is required for `'fortigate'` only. With Azure Firewall
+the private IP is an output of the resource, so there is nothing to transcribe
+and nothing to get wrong.
+
+### Azure Firewall
+
+The policy carries Microsoft's documented AVD egress rules, so session hosts
+work through it without further configuration: the `WindowsVirtualDesktop` FQDN
+tag, service tags for the control plane and platform, RDP Shortpath STUN on UDP
+3478, Windows activation on 1688, the Entra join and sign-in endpoints, the
+certificate endpoints, and the Azure Monitor Agent control endpoints.
+
+Three of those are worth knowing about, because each one fails quietly if
+omitted:
+
+- **Six certificate endpoints are HTTP on port 80**, not HTTPS. An HTTPS-only
+  rule set breaks attestation certificate provisioning.
+- **`pas.windows.net` is not in the AVD required-URL list** and is not reliably
+  covered by the `AzureActiveDirectory` service tag. Without it the host joins
+  Entra ID and then nobody can sign in to it.
+- **Windows activation uses a service tag, not a hostname.** FQDN filtering in
+  a network rule needs DNS proxy and is unavailable on Basic, and port 1688
+  cannot go in an application rule at all since those are HTTP and HTTPS only.
+
+Ordering is handled: the firewall depends on its rule collection group, and the
+spoke route tables depend on the firewall. Session hosts Entra join at first
+boot, and a default route pointing at a firewall with no rules yet would fail
+that join silently.
+
+**The Basic tier is not a cheaper Standard.** It requires a management NIC in
+its own `AzureFirewallManagementSubnet` with a second public IP — unconditional,
+not a forced-tunnelling option — and it tops out at 250 Mbps, which is a real
+ceiling for a pooled estate. Standard is the default for good reason.
+
+Stopping and starting a firewall can change its private IP. If you deallocate
+one to save money, redeploy afterwards so the spoke routes are refreshed.
 
 ## Session hosts
 
@@ -387,6 +463,29 @@ still `Enabled`. If either is missing the step is skipped rather than attempted,
 and `fslogixNtfsPermissionsSkipped` reports it. Set the permissions, confirm a
 client can mount, and only then close the public path.
 
+## Storage hardening
+
+The FSLogix storage account is deployed in a **bootstrap posture**, not its
+finished state:
+
+| | Bootstrap | Steady state |
+|---|---|---|
+| `storageAllowSharedKeyAccess` | `true` | `false` |
+| `storagePublicNetworkAccess` | `Enabled` | `Disabled` |
+
+Both are needed during deployment. The control plane creates the file share
+over the public endpoint, and the NTFS permissions step mounts the share with
+the account key — which is the only credential that bypasses NTFS, and
+therefore the only way to set the initial permissions on a share nobody can yet
+reach.
+
+Neither should survive into production. Once a client has mounted the share
+successfully over the private endpoint, redeploy with both tightened.
+
+The `storageHardeningRequired` output is `true` while either is still in its
+bootstrap value. It exists because the alternative is someone seeing a green
+deployment, ticks all the way down, and never coming back.
+
 ## Deploying
 
 **Deployment is through the template spec and its portal wizard.** That is the
@@ -478,6 +577,66 @@ and note that `what-if` cannot evaluate deployment scripts at all.
 - **Deployment scripts create a transient storage account** with public network
   access. An Azure Policy denying that will block them.
 
+## Monitoring and alerts
+
+### AVD Insights
+
+Insights needs two halves and the template provides both: control plane
+diagnostic settings on the host pool, application groups and workspace, which
+produce the `WVD*` tables; and session host telemetry, collected by the Azure
+Monitor Agent against a data collection rule. There is no workbook to deploy —
+Insights is a built-in portal experience that discovers whatever data is there.
+
+Two counters in Microsoft's published list are display names rather than valid
+counter specifiers, and copying them verbatim collects nothing while reporting
+success:
+
+| As documented | As it must be written |
+|---|---|
+| `Logical Disk(C:)` | `LogicalDisk(C:)` — no space |
+| `Memory(*)` | `Memory` — the object has no instances |
+
+The rule also adds `% Free Space`, which is not in Microsoft's set, because
+there is no platform metric for disk free space and the alert needs it.
+
+Per-process input delay is off by default. Its instance count scales with
+processes multiplied by sessions, so on a busy multi-session host it is a large
+share of ingestion cost for detail you rarely act on.
+
+### Alerts
+
+| Alert | Type | Default |
+|---|---|---|
+| Session host unhealthy | Log, `WVDAgentHealthStatus` | Any host not `Available`, severity 1 |
+| Connection failure rate | Log, `WVDConnections` | Over 10% of more than 20 attempts in an hour |
+| FSLogix errors | Log, `Event` | Any error on either FSLogix channel, severity 1 |
+| Low disk space | Log, `Perf` | C: below 10% free |
+| High CPU | Metric | Above 85% average over 15 minutes |
+| Low memory | Metric | Available memory below 10% over 15 minutes |
+
+The metric alerts are scoped to the AVD resource group rather than to named
+VMs, so hosts added or rebuilt later are covered with no template change —
+which is what a rotating pooled host pool needs.
+
+Three deliberate choices worth knowing:
+
+- **Thresholds are judgement, not documentation.** Microsoft publishes no
+  guidance for pooled multi-session. The windows are long on purpose: a
+  five-minute CPU window pages you every weekday at nine, because logon storms
+  peg CPU for two or three minutes as a matter of course.
+- **The FSLogix alert matches on channel and level, not event IDs.** Microsoft
+  publishes no FSLogix event ID table; the IDs quoted around the internet are
+  community folklore. Once you have a fortnight of real data, read off which
+  IDs actually accompany genuine mount failures in your estate and narrow the
+  query — it already returns the IDs it saw, to make that easy.
+- **`skipQueryValidation` is on.** The `WVD*` tables do not exist until the
+  first diagnostic data lands, so validating the queries at deploy time would
+  fail every greenfield deployment.
+
+Leaving the email address blank still creates the action group and the rules.
+Alerts fire and appear in the portal; nobody is notified. The
+`alertsHaveNoRecipient` output says so.
+
 ## Tearing down
 
 Deleting the resource groups is not enough. **Delete the session hosts' device
@@ -525,9 +684,14 @@ so read them on the deployment's Outputs blade once it finishes.
 | `entraWorkSkippedNoIdentity` | Entra work was requested but no managed identity was supplied, so groups, consent and the manifest tag were all skipped. |
 | `fslogixNtfsPermissionsSkipped` | NTFS permissions could not be set — no session host to run from, or no users group. Until they are, every user can read every other user's profile. |
 | `bastionPrefixValid` | `false` when `bastionSubnetPrefix` is smaller than `/26`, which Azure rejects. |
+| `azureFirewallPrefixValid` | `false` when `AzureFirewallSubnet` is smaller than `/26`. |
+| `azureFirewallMgmtPrefixValid` | `false` when `AzureFirewallManagementSubnet` is smaller than `/26`. Basic tier only. |
+| `alertsHaveNoRecipient` | Alerts deployed with no email address. They fire, nobody is told. |
+| `insightsSkippedNoWorkspace` | Insights requested but monitoring is off, so the agent was not installed. |
+| `storageHardeningRequired` | Storage is still in its bootstrap posture — shared key access on, or the public endpoint open. |
 
-Everything should be empty or false except `bastionPrefixValid`, which should
-be true.
+Everything should be empty or false except the three `...Valid` outputs, which
+should be true.
 
 **These are deployment outputs, not what-if output.** What-if reports resource
 changes only; outputs are evaluated during a real deployment. They save
@@ -546,13 +710,13 @@ holds, with validation, dropdowns and grids instead of hand-edited arrays.
 
 | Tab | What it collects |
 |---|---|
-| Basics | Subscription and region |
-| Hub | Hub network, firewall type, optional Bastion subnet |
+| Basics | Subscription, region and tags |
+| Hub | Hub network, firewall choice and tier, optional Bastion subnet |
 | Spokes | A grid — one row per spoke |
 | Subnets | A grid — one row per subnet, matched to a spoke by name |
 | Storage | FSLogix account and private endpoint, or off |
-| Monitoring | Log Analytics, or off |
-| AVD | Host pools, desktop names, workspace, session host image, size, local admin, FSLogix |
+| Monitoring | Log Analytics, AVD Insights, alerts and the notification email |
+| AVD | Host pools, desktop names, workspace, session host image, size, local admin, time zone, FSLogix |
 | Entra ID | The managed identity, group creation, Kerberos setup, NTFS |
 
 Adding a row to the Spokes grid adds a resource group, VNet, peerings and
@@ -569,7 +733,7 @@ Test changes in the [Form view sandbox](https://aka.ms/form/sandbox) before
 republishing. It renders the JSON live and reports schema errors, which is
 considerably faster than publishing and clicking through.
 
-Eighteen parameters are deliberately not exposed — TLS version, shared key
+Twenty-four parameters are deliberately not exposed — TLS version, shared key
 access, public network access, retention SKU, the DSC artifact URL, the
 Entra Kerberos and default share permission switches, and similar. They keep
 their defaults from `main.bicep`. Anyone needing to change those should use the
@@ -588,10 +752,14 @@ parameters file directly.
   open issue with no committed date.
 - Excluding the storage application from MFA Conditional Access is always
   manual.
-- FortiGate is the only NVA layout offered. Azure Firewall would need a
-  fixed-name `AzureFirewallSubnet` and is not implemented.
-- The AVD NSG rules document required outbound destinations; they do not
-  restrict egress. Azure's default `AllowInternetOutBound` still applies.
+- FortiGate is subnets only — the appliance, its licensing and its HA pairing
+  are yours. Azure Firewall is the path the template deploys end to end.
+- The AVD NSG rules are **informational service-tag rules, not a complete AVD
+  allowlist**. They do not contain everything Microsoft currently documents —
+  UDP 3478 and several platform endpoints are absent — and they restrict
+  nothing, because Azure's default `AllowInternetOutBound` still applies.
+  Real egress control means a firewall, which is what the Azure Firewall path
+  is for.
 - Empty NSGs are attachment points, not segmentation.
 - The Bastion `/26` minimum is surfaced as the `bastionPrefixValid` output
   rather than failing the deployment.

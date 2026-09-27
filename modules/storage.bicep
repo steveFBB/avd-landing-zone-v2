@@ -16,6 +16,9 @@
 // values are visible in the customer's parameters file instead of hidden
 // in the template.
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 param storageAccountName string
 
@@ -96,6 +99,7 @@ param defaultSharePermission string = 'None'
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
+  tags: tags
   location: location
   sku: {
     name: storageSku

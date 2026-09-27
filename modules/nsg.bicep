@@ -12,6 +12,9 @@
 //             subnet has an NSG to attach customer rules to later without
 //             redeploying the VNet.
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 param nsgName string
 
@@ -96,6 +99,7 @@ var avdRules = [
 
 resource nsg 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   name: nsgName
+  tags: tags
   location: location
   properties: {
     securityRules: nsgType == 'avd' ? avdRules : []

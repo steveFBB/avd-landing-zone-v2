@@ -37,6 +37,73 @@
                 "label": "Region",
                 "toolTip": "Region for all resources. AVD metadata is supported in US and European regions, among others."
               }
+            },
+            {
+              "name": "tagsSection",
+              "type": "Microsoft.Common.Section",
+              "label": "Tags (optional)",
+              "elements": [
+                {
+                  "name": "tagsInfo",
+                  "type": "Microsoft.Common.TextBlock",
+                  "visible": true,
+                  "options": {
+                    "text": "Optional — leave empty and nothing is tagged. Add a row per tag to apply it to the resource groups and every resource that supports tags. The names and values are whatever your tagging standard uses; Environment and Production are only examples."
+                  }
+                },
+                {
+                  "name": "tags",
+                  "type": "Microsoft.Common.EditableGrid",
+                  "label": "Tag name and value",
+                  "ariaLabel": "Tags applied to every resource",
+                  "constraints": {
+                    "width": "Full",
+                    "rows": {
+                      "count": {
+                        "min": 0,
+                        "max": 25
+                      }
+                    },
+                    "columns": [
+                      {
+                        "id": "name",
+                        "header": "Name",
+                        "width": "1fr",
+                        "element": {
+                          "type": "Microsoft.Common.TextBox",
+                          "placeholder": "Environment",
+                          "constraints": {
+                            "required": false
+                          }
+                        }
+                      },
+                      {
+                        "id": "value",
+                        "header": "Value",
+                        "width": "1fr",
+                        "element": {
+                          "type": "Microsoft.Common.TextBox",
+                          "placeholder": "Production",
+                          "constraints": {
+                            "required": false
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "tagsNotice",
+                  "type": "Microsoft.Common.InfoBox",
+                  "visible": true,
+                  "options": {
+                    "icon": "Info",
+                    "text": "Subnets, peerings, role assignments, diagnostic settings and data collection rule associations cannot carry tags. That is an Azure limitation, so coverage is never quite complete."
+                  }
+                }
+              ],
+              "visible": true
             }
           ]
         },
@@ -99,22 +166,104 @@
               "name": "hubFirewallType",
               "type": "Microsoft.Common.OptionsGroup",
               "label": "Hub firewall",
-              "defaultValue": "None",
+              "defaultValue": "None — spokes use a NAT gateway for outbound",
               "toolTip": "A FortiGate provides outbound internet for the spokes and adds four NIC subnets. Without one, spokes need NAT gateways instead.",
               "constraints": {
                 "required": true,
                 "allowedValues": [
                   {
-                    "label": "None",
+                    "label": "None — spokes use a NAT gateway for outbound",
                     "value": "none"
                   },
                   {
-                    "label": "FortiGate",
+                    "label": "Azure Firewall — deployed with AVD egress rules",
+                    "value": "azureFirewall"
+                  },
+                  {
+                    "label": "FortiGate — subnets only, appliance deployed separately",
                     "value": "fortigate"
                   }
                 ]
               },
               "visible": true
+            },
+            {
+              "name": "azureFirewallSection",
+              "type": "Microsoft.Common.Section",
+              "label": "Azure Firewall",
+              "elements": [
+                {
+                  "name": "tierInfo",
+                  "type": "Microsoft.Common.TextBlock",
+                  "visible": true,
+                  "options": {
+                    "text": "The firewall is deployed with a policy carrying Microsoft's documented AVD egress rules, so session hosts work through it without further configuration. Its private IP is read from the resource, so no address needs entering."
+                  }
+                },
+                {
+                  "name": "azureFirewallTier",
+                  "type": "Microsoft.Common.DropDown",
+                  "label": "Tier",
+                  "defaultValue": "Standard",
+                  "toolTip": "Basic needs a second subnet and public IP, cannot filter by FQDN in network rules, and tops out at 250 Mbps.",
+                  "constraints": {
+                    "required": true,
+                    "allowedValues": [
+                      {
+                        "label": "Standard",
+                        "value": "Standard"
+                      },
+                      {
+                        "label": "Premium",
+                        "value": "Premium"
+                      },
+                      {
+                        "label": "Basic — 250 Mbps, needs a management subnet",
+                        "value": "Basic"
+                      }
+                    ]
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "azureFirewallSubnetPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "AzureFirewallSubnet prefix",
+                  "defaultValue": "10.0.1.0/26",
+                  "placeholder": "10.0.1.0/26",
+                  "toolTip": "Name is fixed by Azure. /26 or larger — a /26 is enough at any scale.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)/(1[0-9]|2[0-6])$",
+                    "validationMessage": "A CIDR range of /26 or larger, for example 10.0.1.0/26."
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "basicNotice",
+                  "type": "Microsoft.Common.InfoBox",
+                  "visible": "[equals(steps('hub').azureFirewallSection.azureFirewallTier, 'Basic')]",
+                  "options": {
+                    "icon": "Warning",
+                    "text": "The Basic tier requires a management NIC in its own AzureFirewallManagementSubnet with a second public IP. That is unconditional, not a forced-tunnelling option. Windows activation also falls back to a broader service tag rule, because Basic cannot filter by hostname in network rules."
+                  }
+                },
+                {
+                  "name": "azureFirewallManagementSubnetPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "AzureFirewallManagementSubnet prefix",
+                  "defaultValue": "10.0.1.64/26",
+                  "placeholder": "10.0.1.64/26",
+                  "toolTip": "Basic tier only. Name fixed by Azure, /26 or larger, must not overlap AzureFirewallSubnet.",
+                  "constraints": {
+                    "required": false,
+                    "regex": "^$|^((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)/(1[0-9]|2[0-6])$",
+                    "validationMessage": "A CIDR range of /26 or larger, or blank on Standard and Premium."
+                  },
+                  "visible": "[equals(steps('hub').azureFirewallSection.azureFirewallTier, 'Basic')]"
+                }
+              ],
+              "visible": "[equals(steps('hub').hubFirewallType, 'azureFirewall')]"
             },
             {
               "name": "firewallSection",
@@ -707,6 +856,64 @@
                 "icon": "Info",
                 "text": "Infrastructure diagnostics only. AVD Insights additionally needs monitoring agents and data collection rules on the session hosts, which this template does not deploy."
               }
+            },
+            {
+              "name": "insightsSection",
+              "type": "Microsoft.Common.Section",
+              "label": "Insights and alerts",
+              "elements": [
+                {
+                  "name": "deployAvdInsights",
+                  "type": "Microsoft.Common.CheckBox",
+                  "label": "Collect session host telemetry for AVD Insights",
+                  "defaultValue": true,
+                  "toolTip": "Azure Monitor Agent on each host plus a data collection rule with Microsoft's AVD counter and event set, including the FSLogix channels.",
+                  "visible": true
+                },
+                {
+                  "name": "collectPerProcessInputDelay",
+                  "type": "Microsoft.Common.CheckBox",
+                  "label": "Also collect per-process input delay",
+                  "defaultValue": false,
+                  "toolTip": "Instances scale with processes times sessions. A large share of ingestion cost for detail you rarely act on.",
+                  "visible": "[steps('monitoring').insightsSection.deployAvdInsights]"
+                },
+                {
+                  "name": "deployAlerts",
+                  "type": "Microsoft.Common.CheckBox",
+                  "label": "Deploy the starter alert set",
+                  "defaultValue": true,
+                  "toolTip": "Session host availability, connection failure rate, FSLogix errors, disk space, CPU and memory.",
+                  "visible": true
+                },
+                {
+                  "name": "alertEmailAddress",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Alert email address",
+                  "placeholder": "avdops@example.com",
+                  "toolTip": "Leave blank and the alerts still fire and appear in the portal, but nobody is notified.",
+                  "constraints": {
+                    "required": false,
+                    "regex": "^$|^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+                    "validationMessage": "An email address, or blank."
+                  },
+                  "visible": "[steps('monitoring').insightsSection.deployAlerts]"
+                },
+                {
+                  "name": "alertActionGroupShortName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Action group short name",
+                  "defaultValue": "avdops",
+                  "toolTip": "Appears in alert emails and texts. Azure caps it at 12 characters.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^[a-zA-Z0-9]{1,12}$",
+                    "validationMessage": "Letters and digits, up to 12 characters."
+                  },
+                  "visible": "[steps('monitoring').insightsSection.deployAlerts]"
+                }
+              ],
+              "visible": "[steps('monitoring').deployMonitoring]"
             }
           ]
         },
@@ -1111,6 +1318,39 @@
                   "visible": true
                 },
                 {
+                  "name": "osDiskSizeGB",
+                  "type": "Microsoft.Common.DropDown",
+                  "label": "OS disk size",
+                  "defaultValue": "Image default (128 GB)",
+                  "toolTip": "Disks grow but never shrink, so this can be raised later and not lowered. Profiles live on the FSLogix share, so it mostly matters for locally installed applications.",
+                  "constraints": {
+                    "required": true,
+                    "allowedValues": [
+                      {
+                        "label": "Image default (128 GB)",
+                        "value": 0
+                      },
+                      {
+                        "label": "128 GB",
+                        "value": 128
+                      },
+                      {
+                        "label": "256 GB",
+                        "value": 256
+                      },
+                      {
+                        "label": "512 GB",
+                        "value": 512
+                      },
+                      {
+                        "label": "1024 GB",
+                        "value": 1024
+                      }
+                    ]
+                  },
+                  "visible": true
+                },
+                {
                   "name": "acceleratedNetworking",
                   "type": "Microsoft.Common.CheckBox",
                   "label": "Accelerated networking",
@@ -1174,6 +1414,67 @@
                   "defaultValue": true,
                   "toolTip": "Cloud Kerberos is read by LSA at boot, so a host that is not restarted cannot authenticate to the share. Untick only if you will restart them yourself.",
                   "visible": "[steps('avd').sessionHostSection.configureFslogix]"
+                },
+                {
+                  "name": "timeZone",
+                  "type": "Microsoft.Common.DropDown",
+                  "label": "Session host time zone",
+                  "defaultValue": "UTC (Azure default)",
+                  "toolTip": "The host's own clock. For users spread across regions, use redirection below instead — or as well.",
+                  "constraints": {
+                    "required": true,
+                    "allowedValues": [
+                      {
+                        "label": "UTC (Azure default)",
+                        "value": ""
+                      },
+                      {
+                        "label": "GMT Standard Time (UK, Ireland)",
+                        "value": "GMT Standard Time"
+                      },
+                      {
+                        "label": "W. Europe Standard Time",
+                        "value": "W. Europe Standard Time"
+                      },
+                      {
+                        "label": "Central Europe Standard Time",
+                        "value": "Central Europe Standard Time"
+                      },
+                      {
+                        "label": "Eastern Standard Time",
+                        "value": "Eastern Standard Time"
+                      },
+                      {
+                        "label": "Central Standard Time",
+                        "value": "Central Standard Time"
+                      },
+                      {
+                        "label": "Mountain Standard Time",
+                        "value": "Mountain Standard Time"
+                      },
+                      {
+                        "label": "Pacific Standard Time",
+                        "value": "Pacific Standard Time"
+                      },
+                      {
+                        "label": "Hawaiian Standard Time",
+                        "value": "Hawaiian Standard Time"
+                      },
+                      {
+                        "label": "AUS Eastern Standard Time",
+                        "value": "AUS Eastern Standard Time"
+                      }
+                    ]
+                  },
+                  "visible": true
+                },
+                {
+                  "name": "enableTimeZoneRedirection",
+                  "type": "Microsoft.Common.CheckBox",
+                  "label": "Adopt the client's time zone in each session",
+                  "defaultValue": false,
+                  "toolTip": "Each session shows the time zone of the device connecting to it, rather than the host's. Takes effect for new sessions; no restart needed.",
+                  "visible": true
                 }
               ],
               "visible": "[steps('avd').deploySessionHosts]"
@@ -1393,7 +1694,19 @@
         "configureFslogixOnSessionHosts": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.configureFslogix, false)]",
         "fslogixProfileSizeMB": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.fslogixProfileSizeMB, 30000)]",
         "restartSessionHostsAfterFslogix": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.restartAfterFslogix, true)]",
-        "setDesktopFriendlyNames": "[not(empty(steps('identity').entraManagedIdentityId))]"
+        "setDesktopFriendlyNames": "[not(empty(steps('identity').entraManagedIdentityId))]",
+        "azureFirewallTier": "[if(equals(steps('hub').hubFirewallType, 'azureFirewall'), steps('hub').azureFirewallSection.azureFirewallTier, 'Standard')]",
+        "azureFirewallSubnetPrefix": "[if(equals(steps('hub').hubFirewallType, 'azureFirewall'), steps('hub').azureFirewallSection.azureFirewallSubnetPrefix, '')]",
+        "azureFirewallManagementSubnetPrefix": "[if(and(equals(steps('hub').hubFirewallType, 'azureFirewall'), equals(steps('hub').azureFirewallSection.azureFirewallTier, 'Basic')), steps('hub').azureFirewallSection.azureFirewallManagementSubnetPrefix, '')]",
+        "deployAvdInsights": "[if(steps('monitoring').deployMonitoring, steps('monitoring').insightsSection.deployAvdInsights, false)]",
+        "collectPerProcessInputDelay": "[if(steps('monitoring').deployMonitoring, steps('monitoring').insightsSection.collectPerProcessInputDelay, false)]",
+        "deployAlerts": "[if(steps('monitoring').deployMonitoring, steps('monitoring').insightsSection.deployAlerts, false)]",
+        "alertEmailAddress": "[if(steps('monitoring').deployMonitoring, steps('monitoring').insightsSection.alertEmailAddress, '')]",
+        "alertActionGroupShortName": "[if(steps('monitoring').deployMonitoring, steps('monitoring').insightsSection.alertActionGroupShortName, 'avdops')]",
+        "sessionHostTimeZone": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.timeZone, '')]",
+        "enableTimeZoneRedirection": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.enableTimeZoneRedirection, false)]",
+        "tagPairs": "[steps('basics').tagsSection.tags]",
+        "sessionHostOsDiskSizeGB": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.osDiskSizeGB, 0)]"
       }
     }
   }

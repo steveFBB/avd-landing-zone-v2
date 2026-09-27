@@ -18,6 +18,9 @@
 // The zone name is derived from the environment's storage suffix so this
 // also works in sovereign clouds, where the suffix differs.
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 @description('Region for the private endpoint. The DNS zone is always global — that is not a choice Azure offers.')
 param location string
 
@@ -36,6 +39,7 @@ var zoneName = 'privatelink.file.${environment().suffixes.storage}'
 
 resource zone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: zoneName
+  tags: tags
   location: 'global'
 }
 
@@ -43,6 +47,7 @@ resource zoneLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-0
   for vnet in linkedVnets: {
     parent: zone
     name: 'link-${vnet.name}'
+    tags: tags
     location: 'global'
     properties: {
       virtualNetwork: {
@@ -57,6 +62,7 @@ resource zoneLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-0
 
 resource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   name: privateEndpointName
+  tags: tags
   location: location
   properties: {
     subnet: {

@@ -26,6 +26,37 @@
 
 targetScope = 'subscription'
 
+@description('''Tags applied to every resource this template creates that supports
+them. Resource groups are tagged too.
+
+Not everything in Azure takes tags — subnets, peerings, role assignments, diagnostic
+settings and data collection rule associations do not — so coverage is never quite
+complete. That is Azure, not the template.''')
+param tags object = {}
+
+@description('''Tags as an array of { name, value } pairs, which is the shape a portal
+grid can produce — the form has no reliable way to build an object.
+
+Merged with `tags` above rather than replacing it, so the parameters file and the wizard
+can both be used without one silently discarding the other.''')
+param tagPairs array = []
+
+@description('''Time zone for session hosts, as a Windows time zone ID such as
+\'GMT Standard Time\' or \'Eastern Standard Time\'. Empty leaves the Azure default, which
+is UTC.
+
+This sets the HOST\'s clock. To have each user see their own local time instead, use
+enableTimeZoneRedirection below — they are different mechanisms and can be combined.''')
+param sessionHostTimeZone string = ''
+
+@description('''Allow time zone redirection, so a session adopts the time zone of the
+client connecting to it rather than the host\'s.
+
+Usually what people mean by "set the timezone" when users are spread across regions.
+Applied as the Allow time zone redirection policy on each host; takes effect for new
+sessions, with no restart needed.''')
+param enableTimeZoneRedirection bool = false
+
 param location string
 
 //
@@ -36,10 +67,20 @@ param hubVnetName string
 param hubAddressPrefix string
 param gatewaySubnetPrefix string
 
-@description('Hub firewall type. \'none\' creates no NVA subnets and no spoke route tables. \'fortigate\' creates the four FortiGate NIC subnets, creates a route table per spoke pointing at the firewall, and enables forwarded traffic on all peerings.')
+@description('''Hub firewall. Drives three things at once so they cannot drift apart:
+the hub subnets, the spoke route tables, and whether peerings allow forwarded traffic.
+
+  none           no firewall. Spokes need a NAT gateway for outbound internet.
+  fortigate      four FortiGate NIC subnets for an appliance you deploy yourself.
+                 hubFirewallInternalIp is then required, because the template has no
+                 way to know it.
+  azureFirewall  deploys the firewall, a policy carrying the documented AVD egress
+                 rules, and its public IP. The private IP is read from the resource, so
+                 hubFirewallInternalIp is not used.''')
 @allowed([
   'none'
   'fortigate'
+  'azureFirewall'
 ])
 param hubFirewallType string
 
@@ -50,6 +91,27 @@ param fgtExternalPrefix string = ''
 param fgtInternalPrefix string = ''
 param fgtHaPrefix string = ''
 param fgtMgmtPrefix string = ''
+
+@description('''Azure Firewall tier.
+
+Basic is not simply a cheaper Standard: it needs a management subnet and a second public
+IP, it cannot filter by FQDN in network rules, and it tops out at 250 Mbps — a real
+ceiling for a pooled AVD estate. Offered, but Standard is the sensible default.''')
+@allowed([
+  'Basic'
+  'Standard'
+  'Premium'
+])
+param azureFirewallTier string = 'Standard'
+
+@description('Prefix for AzureFirewallSubnet. Name fixed by Azure, /26 or larger. Required when hubFirewallType is azureFirewall.')
+param azureFirewallSubnetPrefix string = ''
+
+@description('Prefix for AzureFirewallManagementSubnet, /26 or larger. Required only on the Basic tier, where the management NIC is mandatory.')
+param azureFirewallManagementSubnetPrefix string = ''
+
+@description('Availability zones for the firewall. Empty deploys it regional.')
+param azureFirewallZones array = []
 
 @description('Create AzureBastionSubnet in the hub. Subnet only — no Bastion host is deployed.')
 param deployBastionSubnet bool = false
@@ -214,6 +276,31 @@ param logAnalyticsWorkspaceName string = 'law-avd'
 param logAnalyticsRetentionDays int = 30
 param logAnalyticsSku string = 'PerGB2018'
 
+@description('''Collect session host performance counters and event logs for AVD
+Insights — an Azure Monitor Agent on each host and a data collection rule carrying
+Microsoft's documented counter and event set, plus the FSLogix channels.
+
+Needs monitoring deployed, since the data has to land somewhere.''')
+param deployAvdInsights bool = true
+
+@description('Also collect per-process input delay. Instances scale with processes times sessions, so this is a large share of ingestion cost for detail you rarely act on.')
+param collectPerProcessInputDelay bool = false
+
+@description('''Deploy an action group and the starter alert set: session host
+availability, connection failure rate, FSLogix errors, disk space, CPU and memory.''')
+param deployAlerts bool = true
+
+@description('Email address for alerts. Empty still creates the action group and the rules, so alerts fire and are visible in the portal, but nobody is told.')
+param alertEmailAddress string = ''
+
+@description('Short name shown in alert emails. Azure caps it at 12 characters.')
+@maxLength(12)
+param alertActionGroupShortName string = 'avdops'
+
+param cpuAlertThresholdPercent int = 85
+param memoryAlertThresholdPercent int = 10
+param diskFreeAlertThresholdPercent int = 10
+
 //
 // AVD CONTROL PLANE
 //
@@ -265,6 +352,7 @@ module avdDesktopNames 'modules/avdDesktopName.bicep' = if (doDesktopNames) {
     avdApplicationGroups
   ]
   params: {
+    tags: allTags
     location: location
     managedIdentityId: entraManagedIdentityId
     managedIdentityPrincipalId: hasEntraIdentity ? entraIdentity!.properties.principalId : ''
@@ -286,8 +374,14 @@ host pools, application groups and workspace with no VMs — whatever sessionHos
 says on each pool. Useful when session hosts are built by a separate image pipeline.''')
 param deploySessionHosts bool = true
 
-@description('Local administrator account created on every session host. A break-glass account — users sign in with their Entra credentials, not this one. Required when any host pool has sessionHostCount above 0.')
-@secure()
+@description('''Local administrator account created on every session host. A break-glass
+account — users sign in with their Entra credentials, not this one. Required when any
+host pool has sessionHostCount above 0.
+
+Deliberately NOT marked @secure(). A username is not a secret, and marking it secure
+means the portal feeds a plain text box into a securestring, and the value never appears
+in deployment history — so when it arrives empty, as it did, there is no way to see
+what was sent.''')
 param sessionHostAdminUsername string = ''
 
 @description('Password for the local administrator account. Azure requires 12-123 characters with three of: uppercase, lowercase, digit, symbol.')
@@ -318,6 +412,10 @@ param sessionHostImageSku string = 'win11-25h2-avd-m365'
 
 @description('Image version. \'latest\' takes the newest published image at deployment time.')
 param sessionHostImageVersion string = 'latest'
+
+@description('''OS disk size in GB for session hosts. 0 uses the image default of 128 GB.
+Disks grow but never shrink, so this can be raised later and not lowered.''')
+param sessionHostOsDiskSizeGB int = 0
 
 @description('OS disk type for session hosts.')
 @allowed([
@@ -370,7 +468,30 @@ param sessionHostAcceleratedNetworking bool = true
 //
 // DERIVED
 //
+// toObject() rather than string surgery on the array: a tag value containing a
+// comma or a quote would break any textual conversion, and tag values routinely
+// contain both.
+// Rows with no name are dropped before conversion. A portal grid can hand back
+// a blank row, and toObject() on an empty key produces a tag Azure rejects —
+// which would fail the deployment for a row the user never filled in.
+var namedTagPairs = filter(tagPairs, pair => !empty(pair.?name ?? ''))
+var allTags = union(tags, toObject(namedTagPairs, pair => pair.name, pair => pair.value))
+
 var hubHasFirewall = hubFirewallType != 'none'
+var deployAzureFirewall = hubFirewallType == 'azureFirewall'
+
+// The route tables need the firewall's internal IP. With FortiGate it is a
+// parameter, because the template does not deploy the appliance and cannot
+// know it; with Azure Firewall it is read from the resource, which removes a
+// whole class of transcription error.
+var firewallInternalIp = deployAzureFirewall ? azureFirewall!.outputs.privateIp : hubFirewallInternalIp
+
+// Everything that may egress through the firewall. Spokes only — the hub's own
+// subnets do not route through it.
+var spokeAddressPrefixes = [for spoke in spokes: spoke.addressPrefix]
+
+var deployInsights = deployAvdInsights && deployMonitoring
+var deployAlertRules = deployAlerts && deployMonitoring
 
 // NVA-forwarded traffic must be allowed across peerings in both directions,
 // or the firewall's forwarded spoke-to-spoke traffic is dropped at the
@@ -458,6 +579,14 @@ var sharedRgNames = union(
   deployMonitoring ? [monitoringRgName] : [],
   [hubRgName]
 )
+var spokeNames = [for spoke in spokes: spoke.name]
+
+// A subnet whose parent spoke does not exist is deployed into rg-<that name>,
+// which does not exist either — and the deployment fails several modules deep
+// with ResourceGroupNotFound, pointing at a resource group rather than at the
+// typo that caused it.
+var orphanedSubnets = filter(subnets, s => !contains(spokeNames, s.spoke))
+
 var spokeRgNames = [for spoke in spokes: 'rg-${spoke.name}']
 var rgNameCollisions = filter(spokeRgNames, r => contains(sharedRgNames, r))
 
@@ -576,6 +705,7 @@ resource entraIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01
 resource hubRg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: hubRgName
   location: location
+  tags: allTags
 }
 
 resource spokeRgs 'Microsoft.Resources/resourceGroups@2024-03-01' = [
@@ -592,6 +722,7 @@ module hub 'modules/hub.bicep' = {
   name: 'hub'
   scope: hubRg
   params: {
+    tags: allTags
     location: location
     vnetName: hubVnetName
     addressPrefix: hubAddressPrefix
@@ -603,6 +734,35 @@ module hub 'modules/hub.bicep' = {
     fgtMgmtPrefix: fgtMgmtPrefix
     deployBastionSubnet: deployBastionSubnet
     bastionSubnetPrefix: bastionSubnetPrefix
+    azureFirewallSubnetPrefix: azureFirewallSubnetPrefix
+    azureFirewallManagementSubnetPrefix: azureFirewallManagementSubnetPrefix
+    azureFirewallTier: azureFirewallTier
+  }
+}
+
+//
+// AZURE FIREWALL
+//
+// Deployed into the hub resource group. The module chains its own rule
+// collection group ahead of the firewall, and the spoke route tables below
+// depend on this module — so a spoke's default route is never pointed at a
+// firewall that has no rules yet. Session hosts Entra join on first boot, and
+// that join going through an unconfigured firewall is a silent failure.
+//
+module azureFirewall 'modules/azureFirewall.bicep' = if (deployAzureFirewall) {
+  name: 'azureFirewall'
+  scope: hubRg
+  params: {
+    tags: allTags
+    location: location
+    firewallName: 'afw-hub'
+    policyName: 'afwp-hub'
+    tier: azureFirewallTier
+    hubVnetId: hub.outputs.vnetId
+    allowedSourceAddresses: spokeAddressPrefixes
+    logAnalyticsWorkspaceId: deployMonitoring ? logAnalytics!.outputs.workspaceId : ''
+    availabilityZones: azureFirewallZones
+    allowIntuneEnrolment: sessionHostEnrolWithIntune
   }
 }
 
@@ -617,6 +777,7 @@ module nsgs 'modules/nsg.bicep' = [
       spokeRgs
     ]
     params: {
+      tags: allTags
       location: location
       nsgName: s.nsgName
       nsgType: s.nsgType
@@ -635,9 +796,10 @@ module routeTables 'modules/routeTable.bicep' = [
       spokeRgs
     ]
     params: {
+      tags: allTags
       location: location
       routeTableName: 'rt-${spoke.name}'
-      firewallInternalIp: hubFirewallInternalIp
+      firewallInternalIp: firewallInternalIp
     }
   }
 ]
@@ -657,6 +819,7 @@ module natGateways 'modules/natGateway.bicep' = [
       spokeRgs
     ]
     params: {
+      tags: allTags
       location: location
       natGatewayName: 'nat-${spoke.name}'
       publicIpName: 'pip-nat-${spoke.name}'
@@ -682,6 +845,7 @@ module spokeVnets 'modules/spoke.bicep' = [
       natGateways
     ]
     params: {
+      tags: allTags
       location: location
       spokeName: spoke.name
       addressPrefix: spoke.addressPrefix
@@ -748,6 +912,7 @@ module entraGroups 'modules/entraGroups.bicep' = if (doCreateGroups) {
   name: 'entraGroups'
   scope: hubRg
   params: {
+    tags: allTags
     location: location
     managedIdentityId: entraManagedIdentityId
     usersGroupName: avdUsersGroupName
@@ -765,6 +930,7 @@ module entraGroups 'modules/entraGroups.bicep' = if (doCreateGroups) {
 resource storageRg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (deployStorage) {
   name: storageRgName
   location: location
+  tags: allTags
 }
 
 module storage 'modules/storage.bicep' = if (deployStorage) {
@@ -774,6 +940,7 @@ module storage 'modules/storage.bicep' = if (deployStorage) {
     storageRg
   ]
   params: {
+    tags: allTags
     location: location
     storageAccountName: storageAccountName
     storageSku: storageSku
@@ -802,6 +969,7 @@ module entraKerberos 'modules/storageEntraKerberos.bicep' = if (doKerberosSetup)
     storage
   ]
   params: {
+    tags: allTags
     location: location
     managedIdentityId: entraManagedIdentityId
     storageAccountName: storageAccountName
@@ -820,6 +988,7 @@ module fslogixPrivateAccess 'modules/fslogixPrivateAccess.bicep' = if (deploySto
     hub
   ]
   params: {
+    tags: allTags
     location: location
     storageAccountId: storage!.outputs.storageAccountId
     privateEndpointSubnetId: peSubnetId
@@ -844,6 +1013,7 @@ module storageRbac 'modules/storageRbac.bicep' = if (deployStorage) {
 resource monitoringRg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (deployMonitoring) {
   name: monitoringRgName
   location: location
+  tags: allTags
 }
 
 module logAnalytics 'modules/logAnalytics.bicep' = if (deployMonitoring) {
@@ -853,6 +1023,7 @@ module logAnalytics 'modules/logAnalytics.bicep' = if (deployMonitoring) {
     monitoringRg
   ]
   params: {
+    tags: allTags
     location: location
     workspaceName: logAnalyticsWorkspaceName
     retentionInDays: logAnalyticsRetentionDays
@@ -895,6 +1066,53 @@ module storageDiagnostics 'modules/storageDiagnostics.bicep' = if (deployMonitor
   }
 }
 
+// Session host telemetry for AVD Insights. The control plane half of Insights
+// is the diagnostic settings already wired onto the host pool, application
+// groups and workspace; this is the other half.
+module avdInsights 'modules/avdInsightsDcr.bicep' = if (deployInsights) {
+  name: 'avdInsights'
+  scope: resourceGroup(monitoringRgName)
+  dependsOn: [
+    monitoringRg
+  ]
+  params: {
+    tags: allTags
+    location: location
+    logAnalyticsWorkspaceId: logAnalytics!.outputs.workspaceId
+    // Referenced so the dependency survives any future reshuffle of dependsOn.
+    requiredTables: logAnalytics!.outputs.builtInTables
+    collectPerProcessInputDelay: collectPerProcessInputDelay
+  }
+}
+
+// Action group and the starter alert set. The metric alerts are scoped to the
+// AVD resource group rather than to named VMs, so hosts added or rebuilt later
+// are covered without touching the template.
+module avdAlerts 'modules/alerts.bicep' = if (deployAlertRules && hasAvdSpoke) {
+  name: 'avdAlerts'
+  scope: resourceGroup(monitoringRgName)
+  dependsOn: [
+    monitoringRg
+    spokeRgs
+  ]
+  params: {
+    tags: allTags
+    location: location
+    logAnalyticsWorkspaceId: logAnalytics!.outputs.workspaceId
+    // Built by hand rather than with subscriptionResourceId(), which inserts a
+    // /providers/ segment and produces something that looks like a resource
+    // group ID but is not one. Azure Monitor validates the scope and rejects it.
+    sessionHostResourceGroupId: '${subscription().id}/resourceGroups/${avdRgName}'
+    sessionHostRegion: location
+    alertEmailAddress: alertEmailAddress
+    actionGroupShortName: alertActionGroupShortName
+    cpuThresholdPercent: cpuAlertThresholdPercent
+    memoryThresholdPercent: memoryAlertThresholdPercent
+    diskFreeThresholdPercent: diskFreeAlertThresholdPercent
+    deployMetricAlerts: deployControlPlane && deploySessionHosts
+  }
+}
+
 //
 // AVD CONTROL PLANE
 //
@@ -909,6 +1127,7 @@ module avdHostPools 'modules/avdHostPool.bicep' = [
       spokeRgs
     ]
     params: {
+      tags: allTags
       location: location
       hostPoolName: 'hp-${pool.name}'
       friendlyName: pool.friendlyName
@@ -926,6 +1145,7 @@ module avdApplicationGroups 'modules/avdApplicationGroup.bicep' = [
     name: 'ag-${pool.name}'
     scope: resourceGroup(avdRgName)
     params: {
+      tags: allTags
       location: location
       applicationGroupName: 'ag-${pool.name}-desktop'
       friendlyName: pool.friendlyName
@@ -943,6 +1163,7 @@ module avdWorkspace 'modules/avdWorkspace.bicep' = if (deployControlPlane) {
   name: 'avdWorkspace'
   scope: resourceGroup(avdRgName)
   params: {
+    tags: allTags
     location: location
     workspaceName: avdWorkspaceName
     friendlyName: avdWorkspaceFriendlyName
@@ -973,8 +1194,15 @@ module sessionHosts 'modules/sessionHost.bicep' = [
     dependsOn: [
       spokeVnets
       avdHostPools
+      // The peerings matter as much as the route table. A session host subnet
+      // carrying a default route to the firewall's private IP — which lives in
+      // the HUB vnet — has no path to that next hop until the peering exists.
+      // A VM booting into that window fails its Entra join silently.
+      hubToSpoke
+      spokeToHub
     ]
     params: {
+      tags: allTags
       location: location
       hostPoolName: 'hp-${pool.name}'
       sessionHostCount: sessionHostCounts[i]
@@ -988,9 +1216,13 @@ module sessionHosts 'modules/sessionHost.bicep' = [
       imageSku: sessionHostImageSku
       imageVersion: sessionHostImageVersion
       osDiskType: sessionHostOsDiskType
+      osDiskSizeGB: sessionHostOsDiskSizeGB
       artifactsLocation: sessionHostArtifactsLocation
+      timeZone: sessionHostTimeZone
+      enableTimeZoneRedirection: enableTimeZoneRedirection
       enrolWithIntune: sessionHostEnrolWithIntune
       acceleratedNetworking: sessionHostAcceleratedNetworking
+      dataCollectionRuleId: deployInsights ? avdInsights!.outputs.dcrId : ''
       configureFslogix: configureFslogixOnSessionHosts && deployStorage
       fslogixStorageAccountName: storageAccountName
       fslogixShareName: fileShareName
@@ -1130,3 +1362,45 @@ output fslogixNtfsPermissionsSkipped bool = setFslogixNtfsPermissions && deployS
 managed identity was supplied, so the desktops are all still called SessionDesktop.
 The rename needs a REST call, which needs the identity.''')
 output desktopNamesSkippedNoIdentity bool = setDesktopFriendlyNames && !empty(desktopsToRename) && !hasEntraIdentity
+
+@description('''False when AzureFirewallSubnet is smaller than /26, which Azure rejects.
+Only meaningful when hubFirewallType is azureFirewall.''')
+output azureFirewallPrefixValid bool = hub.outputs.azureFirewallPrefixValid
+
+@description('''False when AzureFirewallManagementSubnet is smaller than /26. Only
+meaningful on the Basic tier, which requires that subnet.''')
+output azureFirewallMgmtPrefixValid bool = hub.outputs.azureFirewallMgmtPrefixValid
+
+@description('Private IP of the Azure Firewall, which the spoke route tables point at. Empty when no Azure Firewall was deployed.')
+output azureFirewallPrivateIp string = deployAzureFirewall ? azureFirewall!.outputs.privateIp : ''
+
+@description('Public IP of the Azure Firewall — the address spoke traffic egresses from.')
+output azureFirewallPublicIp string = deployAzureFirewall ? azureFirewall!.outputs.publicIp : ''
+
+@description('''True when alerts were deployed with no email address, so they fire and
+appear in the portal but nobody is notified. Harmless if that is deliberate.''')
+output alertsHaveNoRecipient bool = (deployAlertRules && hasAvdSpoke) ? avdAlerts!.outputs.actionGroupHasNoReceiver : false
+
+@description('''True when AVD Insights was requested but monitoring is off, so there is
+no workspace for session host telemetry to go to and the agent was not installed.''')
+output insightsSkippedNoWorkspace bool = deployAvdInsights && !deployMonitoring
+
+@description('''True when the FSLogix storage account is still in its bootstrap posture:
+shared key access enabled, or the public endpoint still open.
+
+Both are needed during deployment — the NTFS step mounts the share with the account key,
+and the control plane creates the share over the public endpoint. Neither should survive
+into steady state. Once a client has mounted the share successfully, redeploy with
+storageAllowSharedKeyAccess false and storagePublicNetworkAccess Disabled.
+
+This output exists because the alternative is someone seeing a green deployment and
+never coming back to harden it.''')
+output storageHardeningRequired bool = deployStorage && (storageAllowSharedKeyAccess || storagePublicNetworkAccess == 'Enabled')
+
+@description('''Subnets whose parent spoke name matches no spoke. Each one targets a
+resource group that will never exist, and the deployment fails with
+ResourceGroupNotFound naming that group rather than the mismatch that caused it.
+
+Empty is what you want. A non-empty list means the Subnets tab and the Spokes tab
+disagree about a name.''')
+output subnetsWithUnknownSpoke array = [for s in orphanedSubnets: '${s.name} (parent: ${s.spoke})']

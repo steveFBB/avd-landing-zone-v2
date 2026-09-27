@@ -24,6 +24,9 @@
 // re-running the deployment does not create duplicate groups.
 // =============================================================================
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 
 @description('Resource ID of the user-assigned managed identity holding Group.ReadWrite.All.')
@@ -46,6 +49,7 @@ param retainArtifacts bool = false
 
 resource groups 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
   name: 'create-avd-entra-groups'
+  tags: tags
   location: location
   kind: 'AzureCLI'
   identity: {

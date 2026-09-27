@@ -32,6 +32,9 @@
 //   DelegatedPermissionGrant.ReadWrite.All (to grant the consent)
 // =============================================================================
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 
 @description('Resource ID of the user-assigned managed identity holding the Graph permissions above.')
@@ -53,6 +56,7 @@ var storageAppDisplayName = '[Storage Account] ${storageAccountName}.file.${envi
 
 resource kerberosSetup 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
   name: 'configure-entra-kerberos'
+  tags: tags
   location: location
   kind: 'AzureCLI'
   identity: {

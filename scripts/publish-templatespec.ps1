@@ -7,8 +7,16 @@
     uiFormDefinition gives it a Create blade in the portal, so the wizard is
     used instead of editing a .bicepparam file.
 
-    Run this once per subscription, and again whenever the template or form
-    changes — each run creates a new version.
+    VERSIONS ARE NOT IMMUTABLE. Microsoft's guidance is that you "can either
+    update an existing version (for hotfixes) or publish a new version", and
+    the version is just a text string — any scheme will do.
+
+    So the default here is 'dev'. Publish over it as often as you like while
+    iterating, and deploy from it. Pass -Version explicitly only when you have
+    something worth keeping, and record that one in CHANGELOG.md.
+
+    Cutting a numbered version for every change produces a long list of
+    versions nobody will ever deploy from again.
 
     The Template Spec itself lives in an ordinary resource group. It has no
     connection to the resource groups the template later creates.
@@ -29,7 +37,7 @@ param(
 
     [string]$TemplateSpecName = 'avd-landing-zone',
 
-    [string]$Version = '1.0.0',
+    [string]$Version = 'dev',
 
     [string]$DisplayName = 'AVD Landing Zone'
 )

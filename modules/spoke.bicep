@@ -18,6 +18,9 @@
 //   vnet-<spoke>            e.g. vnet-avd
 //   snet-<spoke>-<subnet>   e.g. snet-avd-hosts
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 
 @description('Spoke short name, e.g. \'avd\'. Used to derive resource names.')
@@ -46,6 +49,7 @@ var vnetName = 'vnet-${spokeName}'
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
+  tags: tags
   location: location
   properties: {
     addressSpace: {

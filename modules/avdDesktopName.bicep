@@ -18,6 +18,9 @@
 // to set three strings is not a good trade.
 // =============================================================================
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 
 @description('Resource ID of the user-assigned managed identity that runs the script.')
@@ -60,6 +63,7 @@ resource appGroupContributor 'Microsoft.Authorization/roleAssignments@2022-04-01
 
 resource rename 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
   name: 'set-avd-desktop-names'
+  tags: tags
   location: location
   kind: 'AzureCLI'
   identity: {

@@ -16,6 +16,9 @@
 // on API versions from 2023-09-05 onward, so do not go back to it.
 // =============================================================================
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 
 @description('Existing host pool to register these hosts with.')
@@ -33,7 +36,7 @@ param vmNamePrefix string
 
 param subnetId string
 
-@secure()
+@description('Local administrator username. Not secure: a username is not a secret, and marking it so hides it from deployment history exactly when you need to see it.')
 param adminUsername string
 
 @secure()
@@ -46,6 +49,14 @@ param imageVersion string
 
 param osDiskType string
 
+@description('''OS disk size in GB. 0 uses the image default, which is 128 GB for the
+Windows 11 multi-session images.
+
+Disks grow but never shrink, and the value must be at least the image default — Azure
+rejects anything smaller. Profiles live on the FSLogix share, so this mostly matters for
+locally installed applications and the page file.''')
+param osDiskSizeGB int = 0
+
 @description('URL of the AVD DSC configuration package. Microsoft version-stamps this and does not publish the current version — see the README.')
 param artifactsLocation string
 
@@ -57,6 +68,19 @@ param acceleratedNetworking bool = true
 
 @description('Index of the first VM. Raise this when adding hosts to a pool that already has some, or the names collide.')
 param startIndex int = 0
+
+@description('Windows time zone ID for the host clock, such as \'GMT Standard Time\'. Empty leaves the Azure default of UTC.')
+param timeZone string = ''
+
+@description('''Allow time zone redirection, so a session adopts the time zone of the
+client rather than the host. Different mechanism from timeZone above, and they combine:
+the host keeps its own clock, sessions follow their client.''')
+param enableTimeZoneRedirection bool = false
+
+@description('''Resource ID of the AVD Insights data collection rule. When set, the
+Azure Monitor Agent is installed on each host and associated with it. Empty skips both,
+leaving the hosts reporting nothing beyond what the AVD agent sends.''')
+param dataCollectionRuleId string = ''
 
 @description('''Configure FSLogix profile containers and cloud Kerberos on each host.
 
@@ -113,6 +137,7 @@ resource hostPool 'Microsoft.DesktopVirtualization/hostPools@2024-04-03' existin
 resource nics 'Microsoft.Network/networkInterfaces@2024-01-01' = [
   for i in range(startIndex, sessionHostCount): {
     name: 'nic-${vmNamePrefix}-${i}'
+    tags: tags
     location: location
     properties: {
       enableAcceleratedNetworking: acceleratedNetworking
@@ -134,6 +159,7 @@ resource nics 'Microsoft.Network/networkInterfaces@2024-01-01' = [
 resource vms 'Microsoft.Compute/virtualMachines@2024-07-01' = [
   for i in range(startIndex, sessionHostCount): {
     name: '${vmNamePrefix}-${i}'
+    tags: tags
     location: location
     // AADLoginForWindows gets its device-join token from IMDS using the VM's
     // own identity, so this has to be here before the extension installs.
@@ -165,6 +191,9 @@ resource vms 'Microsoft.Compute/virtualMachines@2024-07-01' = [
         osDisk: {
           name: 'osdisk-${vmNamePrefix}-${i}'
           createOption: 'FromImage'
+          // Omitted when 0, so Azure applies the image default rather than
+          // rejecting a zero-sized disk.
+          diskSizeGB: osDiskSizeGB == 0 ? null : osDiskSizeGB
           caching: 'ReadWrite'
           deleteOption: 'Delete'
           managedDisk: {
@@ -177,6 +206,9 @@ resource vms 'Microsoft.Compute/virtualMachines@2024-07-01' = [
         adminUsername: adminUsername
         adminPassword: adminPassword
         windowsConfiguration: {
+          // Omitted rather than set to empty, so Azure applies its own default
+          // instead of rejecting a blank time zone ID.
+          timeZone: empty(timeZone) ? null : timeZone
           // Session hosts are rebuilt, not patched in place. Automatic updates
           // on a pooled host fights the image pipeline and reboots users out.
           enableAutomaticUpdates: false
@@ -247,6 +279,52 @@ resource avdAgent 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = [
   }
 ]
 
+// Azure Monitor Agent, for AVD Insights.
+//
+// It authenticates with the VM's system-assigned identity, which is already
+// there for the Entra join, so no settings block is needed. Automatic upgrade
+// is on because Microsoft supports only versions released in the last year and
+// ships fixes solely in the newest build.
+resource monitorAgent 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = [
+  for i in range(startIndex, sessionHostCount): if (!empty(dataCollectionRuleId)) {
+    parent: vms[i - startIndex]
+    name: 'AzureMonitorWindowsAgent'
+    location: location
+    // Azure serialises extension operations per VM anyway, but making the
+    // order explicit avoids intermittent "another operation is in progress"
+    // conflicts and keeps the reboot below strictly last.
+    dependsOn: [
+      avdAgent[i - startIndex]
+    ]
+    properties: {
+      publisher: 'Microsoft.Azure.Monitor'
+      type: 'AzureMonitorWindowsAgent'
+      // Major.minor only. Pinning a build here means missing the fixes.
+      typeHandlerVersion: '1.0'
+      autoUpgradeMinorVersion: true
+      enableAutomaticUpgrade: true
+    }
+  }
+]
+
+// Associates the host with the data collection rule. An extension resource, so
+// it is scoped to the VM and carries no location of its own. The fixed name
+// makes it idempotent across host rotations — a host rebuilt under the same
+// name re-creates the association cleanly.
+resource dcrAssociation 'Microsoft.Insights/dataCollectionRuleAssociations@2023-03-11' = [
+  for i in range(startIndex, sessionHostCount): if (!empty(dataCollectionRuleId)) {
+    scope: vms[i - startIndex]
+    name: 'avd-insights'
+    dependsOn: [
+      monitorAgent[i - startIndex]
+    ]
+    properties: {
+      dataCollectionRuleId: dataCollectionRuleId
+      description: 'AVD Insights performance counters and event logs.'
+    }
+  }
+]
+
 // FSLogix and cloud Kerberos configuration, per host.
 //
 // Runs after the AVD agent so a failure here is attributable to this step
@@ -258,8 +336,12 @@ resource fslogixConfiguration 'Microsoft.Compute/virtualMachines/runCommands@202
     parent: vms[i - startIndex]
     name: 'Configure-Fslogix'
     location: location
+    // Last, because it ends by scheduling a restart. A reboot landing while
+    // the monitor agent is still provisioning fails that extension and takes
+    // the deployment with it.
     dependsOn: [
       avdAgent[i - startIndex]
+      monitorAgent[i - startIndex]
     ]
     properties: {
       asyncExecution: false
@@ -325,6 +407,42 @@ resource fslogixConfiguration 'Microsoft.Compute/virtualMachines/runCommands@202
           } else {
             Write-Output "Restart skipped. Cloud Kerberos will not take effect until this host reboots."
           }
+        '''
+      }
+    }
+  }
+]
+
+// Time zone redirection, as its own Run Command rather than folded into the
+// FSLogix one. They are unrelated settings, and a managed Run Command is
+// independently re-runnable — which is lost if several jobs share one script.
+//
+// No restart: the policy is read when a session starts, not at boot.
+resource timeZoneRedirection 'Microsoft.Compute/virtualMachines/runCommands@2024-07-01' = [
+  for i in range(startIndex, sessionHostCount): if (enableTimeZoneRedirection) {
+    parent: vms[i - startIndex]
+    name: 'Set-TimeZoneRedirection'
+    location: location
+    tags: tags
+    dependsOn: [
+      avdAgent[i - startIndex]
+    ]
+    properties: {
+      asyncExecution: false
+      timeoutInSeconds: 300
+      treatFailureAsDeploymentFailure: true
+      source: {
+        script: '''
+          $ErrorActionPreference = 'Stop'
+
+          # The "Allow time zone redirection" policy. Under Policies\\ rather than
+          # the plain Terminal Services key, so Group Policy can still override
+          # it later without fighting a value written somewhere else.
+          $key = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Terminal Services'
+          New-Item -Path $key -Force | Out-Null
+          Set-ItemProperty -Path $key -Name fEnableTimeZoneRedirection -Value 1 -Type DWord
+
+          Write-Output "Time zone redirection enabled. Applies to new sessions."
         '''
       }
     }

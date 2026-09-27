@@ -13,6 +13,9 @@
 //   az desktopvirtualization hostpool retrieve-registration-token \
 //     --resource-group <rg> --host-pool-name <name>
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 param hostPoolName string
 param friendlyName string
@@ -47,6 +50,7 @@ param logAnalyticsWorkspaceId string = ''
 
 resource hostPool 'Microsoft.DesktopVirtualization/hostPools@2024-04-03' = {
   name: hostPoolName
+  tags: tags
   location: location
   properties: {
     friendlyName: friendlyName

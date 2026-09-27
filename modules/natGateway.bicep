@@ -17,6 +17,9 @@
 // the same subnet: the user-defined route wins and the NAT gateway bills
 // for nothing.
 
+@description('Tags applied to every resource in this module that supports them.')
+param tags object = {}
+
 param location string
 param natGatewayName string
 
@@ -35,6 +38,7 @@ var zones = empty(zone) ? [] : [zone]
 
 resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   name: publicIpName
+  tags: tags
   location: location
   sku: {
     name: 'Standard'
@@ -48,6 +52,7 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
 
 resource natGateway 'Microsoft.Network/natGateways@2024-01-01' = {
   name: natGatewayName
+  tags: tags
   location: location
   sku: {
     name: 'Standard'

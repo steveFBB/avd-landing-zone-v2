@@ -21,6 +21,15 @@ using 'main.bicep'
 
 param location = 'westus'
 
+// Applied to every resource that supports tags, and to the resource groups.
+// The wizard collects these as a grid and passes them as tagPairs instead;
+// the two are merged, so neither path discards the other.
+param tags = {
+  // Environment: 'Production'
+  // CostCentre: '1234'
+  // ManagedBy: 'TPx'
+}
+
 // -----------------------------------------------------------------------------
 // HUB
 // -----------------------------------------------------------------------------
@@ -32,13 +41,37 @@ param hubAddressPrefix = '10.0.0.0/16'
 // GatewaySubnet — name is fixed by Azure, do not rename.
 param gatewaySubnetPrefix = '10.0.0.0/24'
 
-// Hub firewall:
-//   'none'      — no NVA subnets, no spoke route tables, peerings do not
-//                 allow forwarded traffic
-//   'fortigate' — creates the four FortiGate NIC subnets, creates a route
-//                 table per spoke pointing at hubFirewallInternalIp, and
-//                 enables forwarded traffic on all peerings
+// Hub firewall. Drives the hub subnets, the spoke route tables and whether
+// peerings allow forwarded traffic — all three from one switch, so they
+// cannot drift apart.
+//
+//   'none'          no firewall. Spokes need a NAT gateway for outbound.
+//   'azureFirewall' deploys the firewall, a policy with the documented AVD
+//                   egress rules, and its public IP. The private IP is read
+//                   from the resource, so hubFirewallInternalIp is not used.
+//   'fortigate'     creates the four FortiGate NIC subnets only. The appliance
+//                   is yours to deploy, which is why hubFirewallInternalIp is
+//                   then required — the template cannot know it.
 param hubFirewallType = 'none'
+
+// --- Azure Firewall ----------------------------------------------------------
+// Only used when hubFirewallType = 'azureFirewall'.
+//
+// Basic is not simply a cheaper Standard. It requires a management NIC in its
+// own subnet with a second public IP, it cannot filter by hostname in network
+// rules, and it tops out at 250 Mbps — a real ceiling for a pooled AVD estate.
+param azureFirewallTier = 'Standard'
+
+// Name is fixed by Azure. /26 or larger; a /26 is enough at any scale, because
+// the firewall scales by adding instances inside it.
+param azureFirewallSubnetPrefix = ''
+
+// Basic tier only. Must not overlap AzureFirewallSubnet.
+param azureFirewallManagementSubnetPrefix = ''
+
+// Empty deploys the firewall regional. Spreading it across zones costs nothing
+// beyond inter-zone data charges.
+param azureFirewallZones = []
 
 // Required when hubFirewallType is not 'none'. Must sit inside
 // fgtInternalPrefix, at .68 or higher (Azure reserves the first three
@@ -283,6 +316,38 @@ param logAnalyticsRetentionDays = 30
 // PerGB2018 is the current pay-as-you-go SKU.
 param logAnalyticsSku = 'PerGB2018'
 
+// --- AVD Insights ------------------------------------------------------------
+// Azure Monitor Agent on each session host plus a data collection rule
+// carrying Microsoft's documented AVD counter and event set, including both
+// FSLogix channels. This is the session host half of Insights; the control
+// plane half is the diagnostic settings the template already applies.
+param deployAvdInsights = true
+
+// Per-process input delay instances scale with processes times sessions, so on
+// a busy multi-session host this is a large share of ingestion cost for detail
+// you rarely act on. Per-session is the signal users actually feel.
+param collectPerProcessInputDelay = false
+
+// --- Alerts ------------------------------------------------------------------
+// An action group plus six rules: session host availability, connection
+// failure rate, FSLogix errors, disk space, CPU and memory.
+//
+// Thresholds are judgement, not Microsoft guidance — they publish none for
+// pooled multi-session. The windows are deliberately long enough to survive a
+// logon storm.
+param deployAlerts = true
+
+// Blank still creates the action group and the rules, so alerts fire and are
+// visible in the portal. Nobody is emailed until this is set.
+param alertEmailAddress = ''
+
+// Appears in alert emails. Azure caps it at 12 characters.
+param alertActionGroupShortName = 'avdops'
+
+param cpuAlertThresholdPercent = 85
+param memoryAlertThresholdPercent = 10
+param diskFreeAlertThresholdPercent = 10
+
 // -----------------------------------------------------------------------------
 // AVD CONTROL PLANE
 // -----------------------------------------------------------------------------
@@ -373,9 +438,24 @@ param sessionHostImageVersion = 'latest'
 
 param sessionHostOsDiskType = 'StandardSSD_LRS'
 
+// OS disk size in GB. 0 uses the image default of 128 GB. Disks grow but never
+// shrink, so this can be raised later and not lowered. Profiles live on the
+// FSLogix share, so it mostly matters for locally installed applications.
+param sessionHostOsDiskSizeGB = 0
+
 // Accelerated networking. Not supported by B-series sizes, and an
 // unsupported size fails the deployment outright rather than degrading.
 param sessionHostAcceleratedNetworking = true
+
+// Windows time zone ID for the host clock, such as 'GMT Standard Time'.
+// Empty leaves the Azure default of UTC.
+param sessionHostTimeZone = ''
+
+// Each session adopts the time zone of the client connecting to it, rather
+// than the host's. A different mechanism from the line above, and they
+// combine: the host keeps its own clock, sessions follow their client.
+// Takes effect for new sessions, no restart needed.
+param enableTimeZoneRedirection = false
 
 // Enrol the hosts in Intune during the Entra join. Multi-session hosts
 // enrol with device credentials and need AVD agent 1.0.2944.1400 or newer.
