@@ -60,6 +60,7 @@ param osDiskSizeGB int = 0
 @description('URL of the AVD DSC configuration package. Microsoft version-stamps this and does not publish the current version — see the README.')
 param artifactsLocation string
 
+
 @description('Enrol in Intune as part of the Entra join. Requires Entra ID P1.')
 param enrolWithIntune bool = false
 
@@ -236,6 +237,12 @@ resource vms 'Microsoft.Compute/virtualMachines@2024-07-01' = [
 ]
 
 // Entra join. This must finish before the AVD agent goes on.
+//
+// There is no domain join path here on purpose. A hybrid deployment does not
+// create session hosts at all — the landing zone is built, a domain controller
+// is added afterwards, and hosts are created by a separate process once it
+// exists. main.bicep enforces that; this module only ever builds Entra-joined
+// hosts.
 resource entraJoin 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = [
   for i in range(startIndex, sessionHostCount): {
     parent: vms[i - startIndex]
@@ -375,9 +382,37 @@ resource fslogixConfiguration 'Microsoft.Compute/virtualMachines/runCommands@202
           # Entra ID for a Kerberos ticket, so it cannot authenticate to Azure
           # Files no matter how the storage account is configured. LSA reads it
           # at boot, which is why a restart follows.
-          $kerberos = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\Kerberos\Parameters'
+          #
+          # THE PATH MATTERS. This is a Group Policy setting: the Kerberos
+          # Policy CSP maps CloudKerberosTicketRetrievalEnabled to
+          #   Software\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters
+          # and that is the only key LSA reads.
+          #
+          # HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Kerberos\Parameters is
+          # widely repeated in community guides and does nothing. Setting it
+          # there produces a host where Get-ItemProperty shows 1, the storage
+          # account is configured correctly, and every mount still fails with
+          # system error 86 ("the specified network password is not correct")
+          # because the client silently fell back to NTLM. klist cloud_debug
+          # reporting "Cloud Kerberos enabled by policy: 0" is the tell.
+          $kerberos = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters'
           New-Item -Path $kerberos -Force | Out-Null
           Set-ItemProperty -Path $kerberos -Name CloudKerberosTicketRetrievalEnabled -Value 1 -Type DWord
+
+          # Both are documented prerequisites for Entra Kerberos and must be
+          # RUNNING, not merely present. On Windows 11 multi-session
+          # WinHttpAutoProxySvc is trigger-start and is often stopped, which
+          # stalls ticket retrieval rather than failing it.
+          foreach ($svcName in 'WinHttpAutoProxySvc', 'iphlpsvc') {
+            $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+            if ($null -eq $svc) {
+              Write-Output "WARNING: service $svcName not present on this image."
+              continue
+            }
+            Set-Service -Name $svcName -StartupType Automatic
+            if ($svc.Status -ne 'Running') { Start-Service -Name $svcName }
+            Write-Output "$svcName -> $((Get-Service -Name $svcName).Status)"
+          }
 
           # FSLogix profile containers.
           $fslogix = 'HKLM:\SOFTWARE\FSLogix\Profiles'

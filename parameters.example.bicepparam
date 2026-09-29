@@ -270,14 +270,20 @@ param setFslogixNtfsPermissions = true
 //
 // Create that identity once per tenant:
 //   .\scripts\bootstrap-entra-identity.ps1 -Location northeurope
-// then paste the resource ID it prints here.
 //
-// Leave empty to skip all Entra work and supply group object IDs by hand.
+// Nothing needs copying afterwards. The identity is located by the name and
+// resource group the script gives it, which are the defaults below. Change
+// these only if the script was run with -IdentityName or -ResourceGroup.
+//
+// Set useEntraManagedIdentity to false to skip all Entra work and supply the
+// group object IDs by hand instead.
 
-param entraManagedIdentityId = ''
+param useEntraManagedIdentity = true
+param entraManagedIdentityName = 'id-avd-entra-ops'
+param entraManagedIdentityRgName = 'rg-identity'
 
 // Create the AVD access groups rather than supplying their object IDs.
-// Requires entraManagedIdentityId. Groups are matched by display name, so
+// Requires the bootstrap managed identity. Groups are matched by display name, so
 // redeploying reuses them instead of creating duplicates.
 param createEntraGroups = false
 
@@ -287,7 +293,7 @@ param avdAdminsGroupName = 'AVD Admins'
 // Grant admin consent and apply the kdc_enable_cloud_group_sids tag to the
 // storage account's application. Both are mandatory for cloud-only Entra
 // Kerberos — without the tag, Microsoft's wording is that authentication
-// fails. Requires entraManagedIdentityId.
+// fails. Requires the bootstrap managed identity.
 param configureEntraKerberos = true
 
 // Used only when createEntraGroups is false.
@@ -372,7 +378,7 @@ param diskFreeAlertThresholdPercent = 10
 //   vmSize           session host size. Only used when sessionHostCount > 0.
 //   desktopFriendlyName  what users see instead of "SessionDesktop" in their
 //                    client. Optional; omit to leave it as SessionDesktop.
-//                    Needs entraManagedIdentityId — AVD has no ARM property
+//                    Needs the bootstrap managed identity — AVD has no ARM property
 //                    for this, so it is done with a REST call.
 //   vmNamePrefix     optional. Defaults to the pool name, lowercased, with
 //                    hyphens stripped, truncated to 11 characters. Set it
@@ -489,7 +495,7 @@ param fslogixProfileSizeMB = 30000
 param restartSessionHostsAfterFslogix = true
 
 // Apply desktopFriendlyName from the host pool rows above. Requires
-// entraManagedIdentityId; the rename is a REST call from a deployment script,
+// the bootstrap managed identity; the rename is a REST call from a deployment script,
 // which the template grants Desktop Virtualization Application Group
 // Contributor on the AVD resource group to make.
 param setDesktopFriendlyNames = true

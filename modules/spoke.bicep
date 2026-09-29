@@ -14,9 +14,10 @@
 // module's resource group, and main.bicep orders their creation with
 // dependsOn.
 //
-// Naming is derived, not supplied:
-//   vnet-<spoke>            e.g. vnet-avd
-//   snet-<spoke>-<subnet>   e.g. snet-avd-hosts
+// Names are supplied by the caller, exactly as the customer typed them. The
+// old derived pattern — vnet-<spoke>, snet-<spoke>-<subnet> — survives only as
+// a fallback when a name is left blank, so parameter files written before the
+// name columns existed still produce the same resources.
 
 @description('Tags applied to every resource in this module that supports them.')
 param tags object = {}
@@ -25,6 +26,9 @@ param location string
 
 @description('Spoke short name, e.g. \'avd\'. Used to derive resource names.')
 param spokeName string
+
+@description('Name of the VNet, as typed by the caller. Empty falls back to vnet-<spokeName>.')
+param vnetName string = ''
 
 param addressPrefix string
 
@@ -45,10 +49,25 @@ behaviour explicit rather than dependent on which API version the template
 happens to use.''')
 param privateSubnets bool = true
 
-var vnetName = 'vnet-${spokeName}'
+@description('''DNS servers for this VNet. Empty uses Azure-provided DNS, which is
+correct for a cloud-only deployment: it resolves privatelink zones linked to the VNet,
+so the FSLogix private endpoint works with no DNS servers of your own.
+
+A hybrid deployment must set this to the domain controllers. Azure-provided DNS cannot
+resolve an Active Directory domain, so a session host that cannot reach a DC by name
+fails to join, and the deployment fails with it.
+
+Setting this makes those servers responsible for ALL resolution from the VNet, privatelink
+included — the domain controllers must forward to Azure DNS (168.63.129.16) or the
+storage account resolves to its public IP and profiles stop mounting.''')
+param dnsServers array = []
+
+
+
+var resolvedVnetName = empty(vnetName) ? 'vnet-${spokeName}' : vnetName
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
-  name: vnetName
+  name: resolvedVnetName
   tags: tags
   location: location
   properties: {
@@ -56,6 +75,12 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
       addressPrefixes: [
         addressPrefix
       ]
+    }
+    // Absent rather than an empty list: an empty dhcpOptions is accepted but
+    // then reads as "no DNS at all" in the portal, which is not the same as
+    // Azure-provided DNS and invites someone to "fix" it.
+    dhcpOptions: empty(dnsServers) ? null : {
+      dnsServers: dnsServers
     }
   }
 }
@@ -80,7 +105,8 @@ resource natGateway 'Microsoft.Network/natGateways@2024-01-01' existing = if (!e
 resource snets 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = [
   for (subnet, i) in subnets: {
     parent: vnet
-    name: 'snet-${spokeName}-${subnet.name}'
+    // Named exactly as the caller resolved it — no prefix is added here.
+    name: subnet.name
     properties: {
       addressPrefix: subnet.prefix
       defaultOutboundAccess: !privateSubnets

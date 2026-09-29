@@ -23,6 +23,11 @@
 //   "Memory(*)"         ->  \Memory             the Memory object has no
 //                                               instances, so (*) matches
 //                                               nothing
+//   "Terminal Services(*)" -> \Terminal Services  same again: single-instance
+//                                               object, so (*) matches nothing.
+//                                               Verified on a session host with
+//                                               Get-Counter: the (*) form fails,
+//                                               the bare form succeeds.
 //
 // Copied verbatim from the documentation, those two collect nothing at all and
 // say nothing about it. The specifiers below are corrected.
@@ -115,9 +120,9 @@ resource dcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
             // The disk space alert runs on a 15-minute window, so sampling
             // free space every 30 seconds buys nothing but ingestion cost.
             freeSpaceCounter
-            '\\Terminal Services(*)\\Active Sessions'
-            '\\Terminal Services(*)\\Inactive Sessions'
-            '\\Terminal Services(*)\\Total Sessions'
+            '\\Terminal Services\\Active Sessions'
+            '\\Terminal Services\\Inactive Sessions'
+            '\\Terminal Services\\Total Sessions'
           ]
         }
       ]

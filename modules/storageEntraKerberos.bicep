@@ -50,6 +50,14 @@ param forceUpdateTag string = utcNow()
 @description('Keep the container instance and its transient storage account after a successful run, for debugging.')
 param retainArtifacts bool = false
 
+@description('''Apply the kdc_enable_cloud_group_sids tag.
+
+Mandatory for cloud-only identities and unnecessary for hybrid ones, where the group
+SIDs already come from Active Directory. Microsoft documents it only under the
+cloud-only prerequisites, so a hybrid deployment leaves the application manifest
+alone rather than adding a tag whose effect there is undocumented.''')
+param applyCloudGroupSidsTag bool = true
+
 // Derived rather than hardcoded so this still works in sovereign clouds, where
 // the storage suffix is not core.windows.net.
 var storageAppDisplayName = '[Storage Account] ${storageAccountName}.file.${environment().suffixes.storage}'
@@ -78,6 +86,10 @@ resource kerberosSetup 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
       {
         name: 'STORAGE_APP_DISPLAY_NAME'
         value: storageAppDisplayName
+      }
+      {
+        name: 'APPLY_CLOUD_GROUP_SIDS_TAG'
+        value: string(applyCloudGroupSidsTag)
       }
     ]
     scriptContent: '''
@@ -177,6 +189,15 @@ resource kerberosSetup 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
       # ---------------------------------------------------------------------
       # 2. The cloud group SIDs tag.
       # ---------------------------------------------------------------------
+      # Hybrid identities carry their group SIDs from Active Directory, so the
+      # tag is a cloud-only requirement and is skipped here.
+      if [ "${APPLY_CLOUD_GROUP_SIDS_TAG}" != "True" ] && [ "${APPLY_CLOUD_GROUP_SIDS_TAG}" != "true" ]; then
+        echo "Skipping the cloud group SIDs tag: not required for hybrid identities."
+        printf '{ "applicationObjectId": "%s", "applicationId": "%s", "servicePrincipalObjectId": "%s" }\n' \
+          "${APP_OBJECT_ID}" "${APP_ID}" "${STORAGE_SP_ID}" > "${AZ_SCRIPTS_OUTPUT_PATH}"
+        exit 0
+      fi
+
       # PATCH replaces the whole tags collection, so read what is there and
       # merge. The Storage RP sets tags of its own and stripping them is the
       # kind of damage that surfaces weeks later.
