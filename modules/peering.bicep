@@ -1,8 +1,8 @@
 // VNet peering (one direction)
 //
 // Replaces the six near-identical peering modules in v1. Deployed twice per
-// spoke — once at hub scope (hub -> spoke) and once at spoke scope
-// (spoke -> hub) — with the local/remote arguments swapped.
+// spoke - once at hub scope (hub -> spoke) and once at spoke scope
+// (spoke -> hub) - with the local/remote arguments swapped.
 //
 // The caller passes the remote VNet by resource ID rather than by name, so
 // this module needs no knowledge of which resource group the remote VNet

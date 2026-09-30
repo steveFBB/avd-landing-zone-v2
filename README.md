@@ -1,14 +1,14 @@
 # AVD Landing Zone (v2)
 
 A reusable AVD landing zone, deployed from a portal wizard through an Azure
-Template Spec. Spokes, subnets and host pools are arrays and looped over — one
+Template Spec. Spokes, subnets and host pools are arrays and looped over - one
 VNet or five, same code.
 
 It follows Microsoft's own AVD landing zone accelerator on the decisions that
 shape everything else: an existing VNet is a first-class choice, a hub is
 something you peer into rather than something a workload builds, and the default
 egress is a NAT gateway rather than a firewall. It will still **create** a hub,
-with a firewall, when you ask it to — for a greenfield customer where nobody
+with a firewall, when you ask it to - for a greenfield customer where nobody
 else is going to. See [Network](#network).
 
 Every publish stamps a build number into the template spec, so you can always
@@ -47,9 +47,10 @@ created, the pools are left empty, and the hosts are created later by whatever
 process handles that once a domain controller is in place. This template never
 creates session hosts under hybrid.
 
-Entra Kerberos is deferred under hybrid until you tick that the domain
-controller exists and Entra Connect is syncing. Until then the storage account
-is created without AADKERB and no admin consent is granted — both need
+The choice is `identityModel`. Entra Kerberos is deferred under hybrid until
+`hybridDomainControllerReady` is set - the tick box saying the domain controller
+exists and Entra Connect is syncing. Until then the storage account
+is created without AADKERB and no admin consent is granted - both need
 identities that are already synced, so enabling them on a first pass would
 configure something that cannot work. `entraKerberosDeferred` reports it.
 
@@ -57,14 +58,16 @@ The sequence for a hybrid customer:
 
 1. Deploy the landing zone.
 2. Build the domain controller and get Entra Connect syncing.
-3. Set the DNS servers on the Identity tab to those domain controllers.
+3. Set `dnsServers` on the Identity tab to those domain controllers. Every VNet
+   this template creates uses them, and they must forward to 168.63.129.16 or the
+   storage account resolves to its public IP and profiles stop mounting.
 4. Redeploy with the domain controller box ticked.
 5. Create the session hosts and register them against the empty host pools.
 
 ### Cloud-only constraints
 
 > **Microsoft Entra Kerberos with cloud-only identities is documented as
-> Preview**, and supported in Azure Public only — not US Gov, not China.
+> Preview**, and supported in Azure Public only - not US Gov, not China.
 > Hybrid identities with Entra Kerberos are generally available. That matters
 > commercially as much as technically, so raise it before committing.
 
@@ -77,14 +80,14 @@ The sequence for a hybrid customer:
   | Windows 11 24H2 | KB5079391 | 26100.8116 |
   | Windows 11 25H2 | KB5079391 | 26200.8116 |
   | Windows 11 26H1 | KB5079489 | 28000.1764 |
-  | Windows Server 2025 | latest cumulative update | — |
+  | Windows Server 2025 | latest cumulative update | - |
 
   A freshly deployed marketplace image does **not** necessarily meet this, and
   the template sets `enableAutomaticUpdates: false` with `patchMode: Manual`
   deliberately. Check the build on a new host before concluding FSLogix is
   broken.
 - **MFA must be disabled on the storage account's Entra application.** Not on
-  users — on the app registration Azure creates for the storage account. A
+  users - on the app registration Azure creates for the storage account. A
   broad "require MFA for all apps" policy breaks authentication to the share.
 - **Both `WinHttpAutoProxySvc` and `iphlpsvc` must be running.** The template
   attempts this on each host, best effort: `Set-Service` on the first is
@@ -96,11 +99,11 @@ deployment shares this model.
 
 ## What it deploys
 
-**Network** — only when `networkMode` is `create`
+**Network** - only when `networkMode` is `create`
 
 - Any number of VNets, each in its own resource group, named as you type them
 - Any number of subnets, assigned to their VNet by key
-- An NSG per subnet — either a set of informational service-tag rules for AVD,
+- An NSG per subnet - either a set of informational service-tag rules for AVD,
   or an empty attachment point
 - A NAT gateway and public IP per VNet that asks for one
 - A route table per VNet when routing through an existing firewall
@@ -144,9 +147,12 @@ No hub is created. See [Network](#network).
 
 **Everywhere**
 
-- Tags on every resource that supports them, and on the resource groups.
+- Tags on every resource that supports them, and on the resource groups. One set,
+  applied everywhere: `tagPairs` is the array the wizard's grid produces, merged
+  with the `tags` object a parameters file can set. There is no per-resource-group
+  tagging.
   Subnets, peerings, role assignments, diagnostic settings and data collection
-  rule associations do not take tags — an Azure limitation, so coverage is
+  rule associations do not take tags - an Azure limitation, so coverage is
   never quite complete.
 - A session host time zone, and separately time zone redirection so each
   session adopts the time zone of the client connecting to it. Different
@@ -156,7 +162,7 @@ No hub is created. See [Network](#network).
 
 Creating Entra groups and finishing the Entra Kerberos setup are Microsoft
 Graph operations. The Azure portal's deployment flow carries no Graph token, so
-a template deployed from a Create blade cannot do either by itself — the
+a template deployed from a Create blade cannot do either by itself - the
 Microsoft Graph Bicep extension is GA but documented to fail with 401 inside a
 Template Spec, and portal deployments fail with "Insufficient privileges to
 complete the operation".
@@ -169,9 +175,10 @@ once per tenant:
 .\scripts\bootstrap-entra-identity.ps1 -Location northeurope
 ```
 
-**Nothing needs copying afterwards.** The template finds the identity by the
-name and resource group the script gives it — `id-avd-entra-ops` in
-`rg-identity` — so there is nothing to paste into the wizard. Override
+**Nothing needs copying afterwards.** `useEntraManagedIdentity` is on by
+default and the template finds the identity by the name and resource group the
+script gives it - `id-avd-entra-ops` in
+`rg-identity` - so there is nothing to paste into the wizard. Override
 `entraManagedIdentityName` or `entraManagedIdentityRgName` in a parameters file
 on the rare occasion the script was run with `-IdentityName` or
 `-ResourceGroup`.
@@ -183,7 +190,7 @@ What it grants, and why each one:
 | `Group.ReadWrite.All` | Creating the access groups, and reading first so redeployment does not create duplicates |
 | `Application.ReadWrite.All` | Adding the `kdc_enable_cloud_group_sids` tag to the storage account's application |
 | `DelegatedPermissionGrant.ReadWrite.All` | Granting admin consent on that application |
-| `Reader` (Azure RBAC, subscription) | Not for the work itself — the script container runs `az login --identity` before your script, and that fails when the identity can see no subscription |
+| `Reader` (Azure RBAC, subscription) | Not for the work itself - the script container runs `az login --identity` before your script, and that fails when the identity can see no subscription |
 
 These are tenant-wide permissions. Read them before running the script.
 
@@ -202,8 +209,8 @@ taken as parameters instead, and the Entra work becomes four manual steps. The
 
 ## Network
 
-A hub carries the customer's gateway, their firewall and — in a hybrid
-environment — their domain controllers. It belongs to whoever runs their
+A hub carries the customer's gateway, their firewall and - in a hybrid
+environment - their domain controllers. It belongs to whoever runs their
 network, and in Microsoft's enterprise-scale model it lives in a connectivity
 subscription owned by the platform team. Microsoft's own AVD accelerator never
 creates one; it peers into whatever exists.
@@ -236,12 +243,12 @@ The decision is `hubMode`, and it only applies when creating VNets:
 | `avdResourceGroupName` | Created, for the host pool, application group, workspace and session hosts |
 
 The privatelink DNS zone is linked to whichever VNets those subnets belong to,
-deduplicated — both are often in the same one, and two zone links with the same
+deduplicated - both are often in the same one, and two zone links with the same
 name fail the deployment.
 
 ### Peering
 
-Every VNet with `peerToHub: true` is peered to the hub, in both directions —
+Every VNet with `peerToHub: true` is peered to the hub, in both directions -
 whether that hub was built here or already existed.
 
 Both sides of a peering have to exist, and for an existing hub the other side
@@ -273,7 +280,7 @@ comes up.
 | `none` | Neither. Correct only when the subnets are not private, or something outside this deployment provides egress. |
 
 **A firewall in a hub you created overrides this.** Set `hubFirewallType` and
-every created VNet routes through it — there is no sense in building one and
+every created VNet routes through it - there is no sense in building one and
 then routing around it.
 
 **NAT gateway is Microsoft's recommendation for AVD.** Their wording: it
@@ -284,7 +291,7 @@ in that path costs you.
 
 A NAT gateway cannot be attached to subnets in more than one VNet, so each VNet
 needing one pays for its own gateway and public IP. Set `natGateway: true` on
-the VNet **and** `useNatGateway: true` on its subnets — a gateway with no
+the VNet **and** `useNatGateway: true` on its subnets - a gateway with no
 subnet attached does nothing.
 
 Do not put a NAT gateway and a firewall route table on the same subnet. The
@@ -299,7 +306,7 @@ never register: `sessionHostsSkippedNoOutbound` says so.
 
 Resource groups, VNets and subnets are named **exactly as you type them** on
 the Spokes and Subnets tabs. Leave a name blank and it falls back to the old
-derived pattern — `rg-<key>`, `vnet-<key>`, `snet-<key>-<name>` — so a
+derived pattern - `rg-<key>`, `vnet-<key>`, `snet-<key>-<name>` - so a
 parameters file written before those columns existed still produces the same
 resources.
 
@@ -340,6 +347,9 @@ modules/
   logAnalytics.bicep            workspace
   vnetDiagnostics.bicep         per-VNet diagnostic settings
   storageDiagnostics.bicep      storage diagnostic settings
+  avdInsightsDcr.bicep          AVD Insights data collection rule
+  alerts.bicep                  action group and the starter alert set
+  avdDesktopName.bicep          renames the published desktop
   avdHostPool.bicep             host pool and its registration token
   avdApplicationGroup.bicep     desktop app group and its user assignment
   avdWorkspace.bicep            the single workspace
@@ -383,7 +393,7 @@ param subnets = [
 Here `name` **is** the subnet's name, used as typed. Its NSG is called
 `nsg-<that name>`.
 
-Both arrays are flat — every field is a string, number or boolean — so the
+Both arrays are flat - every field is a string, number or boolean - so the
 portal form can collect them in a grid without nesting.
 
 Session hosts land in the AVD spoke's first subnet with `nsgType: 'avd'`. That
@@ -437,8 +447,8 @@ a default route pointing at a firewall with no rules yet fails that join
 silently.
 
 **The Basic tier is not a cheaper Standard.** It requires a management NIC in
-its own `AzureFirewallManagementSubnet` with a second public IP — unconditional,
-not a forced-tunnelling option — and tops out at 250 Mbps, which is a real
+its own `AzureFirewallManagementSubnet` with a second public IP - unconditional,
+not a forced-tunnelling option - and tops out at 250 Mbps, which is a real
 ceiling for a pooled estate.
 
 Stopping and starting a firewall can change its private IP. If you deallocate
@@ -451,8 +461,8 @@ session hosts to the AVD service.
 ## Session hosts
 
 Hosts are built per host pool from the `sessionHostCount` and `vmSize` fields
-on each `hostPools` entry. Everything else — image, disk type, local admin
-account — is shared by every pool, because in practice one customer runs one
+on each `hostPools` entry. Everything else - image, disk type, local admin
+account - is shared by every pool, because in practice one customer runs one
 image.
 
 Each host gets three things in a fixed order:
@@ -481,11 +491,11 @@ a single image dropdown and works the offer out from the SKU; in the parameters
 file you have to set both.
 
 All the multi-session images ship FSLogix preinstalled. The binaries, not the
-configuration — profile container settings are still yours to apply.
+configuration - profile container settings are still yours to apply.
 
 Only 24H2 and newer are offered, and `sessionHostImageSku` is constrained to
 them. Cloud-only Entra Kerberos does not support older builds, so a 23H2 host
-deploys perfectly and then cannot mount a profile — better to fail validation.
+deploys perfectly and then cannot mount a profile - better to fail validation.
 
 ### The DSC artifact URL
 
@@ -498,15 +508,15 @@ https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuratio
 Microsoft version-stamps this file, publishes no "latest" alias, and does not
 document the current version anywhere. If session host registration starts
 failing, that is the first thing to check. The current value is visible in the
-template the portal generates from **Host pools → Add virtual machines →
-Review + create → Download a template for automation**.
+template the portal generates from **Host pools -> Add virtual machines ->
+Review + create -> Download a template for automation**.
 
 ### Registration tokens
 
 The session host module reads the token directly from the host pool with
 `listRegistrationTokens()` and puts it in the DSC extension's protected
 settings. It never passes through a module output, and it is never a deployment
-output — deployment history persists indefinitely, and a registration token is
+output - deployment history persists indefinitely, and a registration token is
 a credential.
 
 To add hosts outside this template:
@@ -558,8 +568,8 @@ Microsoft's documented set for profile containers:
 own profile folder and stops them opening anyone else's.
 
 Getting there needs a removal as well as three grants. The default ACL on a new
-Azure file share root is **explicit, not inherited** — a share root has no
-parent directory — so `icacls /inheritance:r` removes nothing and still exits
+Azure file share root is **explicit, not inherited** - a share root has no
+parent directory - so `icacls /inheritance:r` removes nothing and still exits
 0. The entry that matters is `NT AUTHORITY\Authenticated Users:(OI)(CI)(M)`,
 which has to be deleted by name or every user keeps Modify on every other
 user's profile while the script reports success. Principals are referenced by
@@ -572,12 +582,12 @@ converted to its Entra SID form (`S-1-12-1-...`) on the host and passed to
 not have yet.
 
 The share is mounted with the **storage account key**, which is the only
-credential that bypasses NTFS — exactly what you need to set initial
+credential that bypasses NTFS - exactly what you need to set initial
 permissions on a share nobody can reach. It also means the step does not depend
 on Entra Kerberos having finished.
 
 The trade is that the step needs `storageAllowSharedKeyAccess` true and a
-reachable file endpoint — either the private one or `storagePublicNetworkAccess`
+reachable file endpoint - either the private one or `storagePublicNetworkAccess`
 still `Enabled`. If either is missing the step is skipped rather than attempted,
 and `fslogixNtfsPermissionsSkipped` reports it. Set the permissions, confirm a
 client can mount, and only then close the public path.
@@ -594,7 +604,7 @@ finished state:
 
 Both are needed during deployment. The control plane creates the file share
 over the public endpoint, and the NTFS permissions step mounts the share with
-the account key — which is the only credential that bypasses NTFS, and
+the account key - which is the only credential that bypasses NTFS, and
 therefore the only way to set the initial permissions on a share nobody can yet
 reach.
 
@@ -608,7 +618,7 @@ deployment, ticks all the way down, and never coming back.
 ## Deploying
 
 **Deployment is through the template spec and its portal wizard.** That is the
-point of the project — a form anyone can fill in, not a parameters file only
+point of the project - a form anyone can fill in, not a parameters file only
 its author understands. The command line is for validating changes before
 publishing them, not for deploying.
 
@@ -619,7 +629,7 @@ az account set --subscription "<subscription>"
 .\scripts\publish-templatespec.ps1 -Location northeurope -Version 1.3.0
 ```
 
-Then **Template specs** → **avd-landing-zone** → the version → **Deploy**.
+Then **Template specs** -> **avd-landing-zone** -> the version -> **Deploy**.
 
 Template spec versions are immutable, so every change means a new version. Bump
 `-Version` each time.
@@ -645,7 +655,7 @@ Role assignments whose name derives from a group object ID come back as
 **unsupported** rather than analysed, because the groups do not exist until the
 deployment script has run and what-if will not guess a resource ID. Five of
 them is normal and correct. Deployment scripts themselves appear as opaque
-resources — what-if cannot evaluate what they do.
+resources - what-if cannot evaluate what they do.
 
 Expected resource counts:
 
@@ -657,7 +667,7 @@ Expected resource counts:
 | Same with storage and monitoring off too | 17 |
 
 Each session host adds four resources: NIC, VM, Entra join extension and AVD
-agent extension. Counts are approximate — what-if sometimes groups
+agent extension. Counts are approximate - what-if sometimes groups
 sub-resources differently, and deployment scripts each create a transient
 storage account and container instance that are cleaned up afterwards.
 
@@ -676,7 +686,7 @@ containers mounting over Entra Kerberos.
 
 - the `hybrid` identity model
 - `networkMode: existing`
-- `hubMode: existing` — peering to a hub that already exists
+- `hubMode: existing` - peering to a hub that already exists
 - `egressMode: firewall`
 - the FortiGate hub path
 - more than one host pool
@@ -685,13 +695,13 @@ Previously deployed and expected to still work, but not since the hub was
 reworked: `hubMode: create` with Azure Firewall, and the Bastion subnet.
 
 **Known not working:** ten performance counters are in the deployed data
-collection rule, pass `Get-Counter` on a host, and never reach the workspace —
+collection rule, pass `Get-Counter` on a host, and never reach the workspace -
 the LogicalDisk queue lengths, all four Memory counters and all four
 PhysicalDisk counters. AVD Insights wants them and therefore reports the hosts
 as unconfigured. Cause unknown.
 
 `what-if` and `build` catch template errors. They do not catch quota, image
-availability, tenant policy, or anything a deployment script does at runtime —
+availability, tenant policy, or anything a deployment script does at runtime -
 and `what-if` cannot evaluate deployment scripts at all.
 
 ### Known runtime risks
@@ -702,7 +712,7 @@ and `what-if` cannot evaluate deployment scripts at all.
   adding its own credential. The fix is an app management policy exception
   assigned to the Storage RP's service principal, app ID
   `a6aa9161-5291-40bb-8c5c-923b567bee3b`. This affects the portal, CLI and
-  PowerShell identically — it is not specific to ARM.
+  PowerShell identically - it is not specific to ARM.
 - **A half-failed Entra Kerberos enablement does not self-heal.** If the first
   attempt errors part way, the backend provisioning state can be left broken,
   later attempts report success without creating the service principal, and it
@@ -717,7 +727,7 @@ and `what-if` cannot evaluate deployment scripts at all.
 Insights needs two halves and the template provides both: control plane
 diagnostic settings on the host pool, application groups and workspace, which
 produce the `WVD*` tables; and session host telemetry, collected by the Azure
-Monitor Agent against a data collection rule. There is no workbook to deploy —
+Monitor Agent against a data collection rule. There is no workbook to deploy -
 Insights is a built-in portal experience that discovers whatever data is there.
 
 Two counters in Microsoft's published list are display names rather than valid
@@ -726,8 +736,8 @@ success:
 
 | As documented | As it must be written |
 |---|---|
-| `Logical Disk(C:)` | `LogicalDisk(C:)` — no space |
-| `Memory(*)` | `Memory` — the object has no instances |
+| `Logical Disk(C:)` | `LogicalDisk(C:)` - no space |
+| `Memory(*)` | `Memory` - the object has no instances |
 
 The rule also adds `% Free Space`, which is not in Microsoft's set, because
 there is no platform metric for disk free space and the alert needs it.
@@ -748,7 +758,7 @@ share of ingestion cost for detail you rarely act on.
 | Low memory | Metric | Available memory below 10% over 15 minutes |
 
 The metric alerts are scoped to the AVD resource group rather than to named
-VMs, so hosts added or rebuilt later are covered with no template change —
+VMs, so hosts added or rebuilt later are covered with no template change -
 which is what a rotating pooled host pool needs.
 
 Three deliberate choices worth knowing:
@@ -761,7 +771,7 @@ Three deliberate choices worth knowing:
   publishes no FSLogix event ID table; the IDs quoted around the internet are
   community folklore. Once you have a fortnight of real data, read off which
   IDs actually accompany genuine mount failures in your estate and narrow the
-  query — it already returns the IDs it saw, to make that easy.
+  query - it already returns the IDs it saw, to make that easy.
 - **`skipQueryValidation` is on.** The `WVD*` tables do not exist until the
   first diagnostic data lands, so validating the queries at deploy time would
   fail every greenfield deployment.
@@ -783,7 +793,7 @@ Why it matters: VM names are derived from the host pool name and are therefore
 identical on every rebuild. A device object left behind by the previous
 deployment still owns that hostname, so the new VM's join is refused with
 `error_hostname_duplicate`. The `AADLoginForWindows` extension **reports
-success anyway** — the deployment goes green, the session hosts appear in the
+success anyway** - the deployment goes green, the session hosts appear in the
 host pool, and users get a credential prompt that never accepts a correct
 password. `dsregcmd /status` on the host shows `AzureAdJoined : NO`.
 
@@ -796,14 +806,14 @@ az group delete --name rg-storage --yes --no-wait
 az group delete --name rg-mgmt --yes --no-wait
 ```
 
-The Entra groups created by the deployment are left alone deliberately — they
+The Entra groups created by the deployment are left alone deliberately - they
 may hold membership you want to keep. Delete them by hand if you want a clean
 tenant.
 
 ## Deployment guards
 
 Outputs that flag configurations which deploy successfully but do not work.
-None block the deployment — Bicep has no non-experimental assertion mechanism —
+None block the deployment - Bicep has no non-experimental assertion mechanism -
 so read them on the deployment's Outputs blade once it finishes.
 
 | Output | Meaning |
@@ -815,7 +825,7 @@ so read them on the deployment's Outputs blade once it finishes.
 | `sessionHostsSkippedNoSubnet` | Session hosts were requested but the AVD spoke has no subnet with `nsgType: 'avd'` to put them in. |
 | `duplicateSessionHostPrefixes` | Two host pools produce the same VM name prefix. Set `vmNamePrefix` on one. |
 | `entraWorkSkippedNoIdentity` | Entra work was requested but no managed identity was supplied, so groups, consent and the manifest tag were all skipped. |
-| `fslogixNtfsPermissionsSkipped` | NTFS permissions could not be set — no session host to run from, or no users group. Until they are, every user can read every other user's profile. |
+| `fslogixNtfsPermissionsSkipped` | NTFS permissions could not be set - no session host to run from, or no users group. Until they are, every user can read every other user's profile. |
 | `bastionPrefixValid` | `false` when `bastionSubnetPrefix` is smaller than `/26`, which Azure rejects. |
 | `azureFirewallPrefixValid` | `false` when `AzureFirewallSubnet` is smaller than `/26`. |
 | `azureFirewallMgmtPrefixValid` | `false` when `AzureFirewallManagementSubnet` is smaller than `/26`. Basic tier only. |
@@ -825,9 +835,11 @@ so read them on the deployment's Outputs blade once it finishes.
 | `hubSidePeeringNotCreated` | A hub VNet was given but it is in another subscription, so only the spoke side of each peering exists. Neither side carries traffic until their network team adds the other. |
 | `entraKerberosDeferred` | Hybrid, and the domain controller is not in place yet, so the storage account has no AADKERB and no consent was granted. The intended first-pass state. |
 | `hybridSessionHostsSkipped` | Hybrid, so no session hosts were created. By design. |
+| `hybridMissingGroupObjectIds` | Hybrid with no group object IDs supplied and none created, so nobody has access to the desktop or the share. |
+| `desktopNamesSkippedNoIdentity` | Desktop names were set on host pool rows but no managed identity was supplied, so they are all still called SessionDesktop. |
 | `alertsHaveNoRecipient` | Alerts deployed with no email address. They fire, nobody is told. |
 | `insightsSkippedNoWorkspace` | Insights requested but monitoring is off, so the agent was not installed. |
-| `storageHardeningRequired` | Storage is still in its bootstrap posture — shared key access on, or the public endpoint open. |
+| `storageHardeningRequired` | Storage is still in its bootstrap posture - shared key access on, or the public endpoint open. |
 
 Everything should be empty or false, apart from the three `...Valid` outputs,
 which should be true, and the two that report a deliberate hybrid state.
@@ -836,10 +848,17 @@ which should be true, and the two that report a deliberate hybrid state.
 changes only; outputs are evaluated during a real deployment. They save
 troubleshooting time; they are not a pre-flight check.
 
-Two other outputs are there to be used rather than checked:
-`storageEntraApplicationId` is what you search for when excluding the storage
-app from MFA, and `avdUsersGroupId` / `avdAdminsGroupId` report the groups that
-were created.
+The rest of the outputs are there to be used rather than checked:
+
+| Output | Use |
+|---|---|
+| `storageEntraApplicationId` | What to search for when excluding the storage app from MFA Conditional Access. |
+| `avdUsersGroupId`, `avdAdminsGroupId` | The groups that were created. |
+| `identitySubnetId` | The subnet to build a domain controller into, when a hub was created with one. |
+| `hubVnetId`, `createdVnetIds` | What was created, for a follow-on deployment. |
+| `azureFirewallPrivateIp`, `azureFirewallPublicIp` | The firewall's addresses. The public one is what traffic egresses from. |
+| `storageAccountId`, `logAnalyticsWorkspaceId`, `avdWorkspaceId`, `hostPoolNames`, `sessionHostSubnet` | Resource IDs and names, for whatever runs next. |
+| `identityModelUsed`, `networkModeUsed` | What the deployment actually did, which is worth recording. |
 
 ## Portal wizard
 
@@ -852,8 +871,8 @@ with validation, dropdowns and grids instead of hand-edited arrays.
 | Basics | Subscription, region and tags |
 | Identity | Entra only or hybrid, the bootstrap identity, groups, Kerberos, NTFS |
 | Network | Create or use existing VNets, the hub, its firewall, and outbound internet |
-| Spokes | A grid — one row per VNet. Hidden when using existing VNets. |
-| Subnets | A grid — one row per subnet. Hidden when using existing VNets. |
+| Spokes | A grid - one row per VNet. Hidden when using existing VNets. |
+| Subnets | A grid - one row per subnet. Hidden when using existing VNets. |
 | Storage | FSLogix account and private endpoint, or off |
 | Monitoring | Log Analytics, AVD Insights, alerts and the notification email |
 | AVD | Host pools, desktop names, workspace, session host image, size, local admin, time zone, FSLogix |
@@ -875,7 +894,7 @@ Test changes in the [Form view sandbox](https://aka.ms/form/sandbox) before
 republishing. It renders the JSON live and reports schema errors, which is
 considerably faster than publishing and clicking through.
 
-Twenty-four parameters are deliberately not exposed — TLS version, shared key
+Twenty-four parameters are deliberately not exposed - TLS version, shared key
 access, public network access, retention SKU, the DSC artifact URL, the
 Entra Kerberos and default share permission switches, and similar. They keep
 their defaults from `main.bicep`. Anyone needing to change those should use the
@@ -890,19 +909,19 @@ parameters file directly.
   share are never set. Both are left to whatever process runs once a domain
   controller exists.
 - The Entra work needs a bootstrap identity with tenant-wide Graph
-  permissions. There is no way round this from a portal Create blade — the
+  permissions. There is no way round this from a portal Create blade - the
   Microsoft Graph Bicep extension does not work in one, and Microsoft has an
   open issue with no committed date.
 - Excluding the storage application from MFA Conditional Access is always
   manual.
-- FortiGate is subnets only — the appliance, its licensing and its HA pairing
+- FortiGate is subnets only - the appliance, its licensing and its HA pairing
   are yours. Azure Firewall is the path deployed end to end.
 - A hub is only created in the subscription being deployed into. A customer
   whose hub belongs in a separate connectivity subscription needs
   `hubMode: existing`.
 - The AVD NSG rules are **informational service-tag rules, not a complete AVD
-  allowlist**. They do not contain everything Microsoft currently documents —
-  UDP 3478 and several platform endpoints are absent — and they restrict
+  allowlist**. They do not contain everything Microsoft currently documents -
+  UDP 3478 and several platform endpoints are absent - and they restrict
   nothing, because Azure's default `AllowInternetOutBound` still applies.
   Real egress control means a firewall, which this template routes to but does
   not deploy.
@@ -921,7 +940,7 @@ parameters file directly.
 - Share RBAC is granted at the storage account, not the share. A second file
   share on that account would inherit it.
 - Adding hosts to an existing pool needs `startIndex` on the session host
-  module, which `main.bicep` does not currently expose — raising
+  module, which `main.bicep` does not currently expose - raising
   `sessionHostCount` and redeploying rebuilds from index 0 and collides.
 - Pooled host pools only. Personal (1:1) host pools are not supported.
 - Desktop application groups only. RemoteApp is not implemented.

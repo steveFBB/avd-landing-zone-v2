@@ -3,7 +3,7 @@
 // =============================================================================
 // Azure RBAC decides who can reach the share. NTFS decides what they can do
 // once they are on it. Both are required, and the second one cannot be done
-// from ARM directly because it needs a mounted SMB client — so it runs as a
+// from ARM directly because it needs a mounted SMB client - so it runs as a
 // Run Command on the first session host.
 //
 // The share is mounted with the storage account key rather than a user
@@ -15,10 +15,10 @@
 // The permission set is Microsoft's documented one for profile containers:
 //
 //   AVD users      Modify, this folder only
-//                  — enough to create their own profile folder, not enough to
+//                  - enough to create their own profile folder, not enough to
 //                    open anyone else's
 //   CREATOR OWNER  Modify, subfolders and files only
-//                  — each user owns the folder they created
+//                  - each user owns the folder they created
 //   Administrators Modify, everything
 //
 // Cloud-only Entra groups have no on-premises SID, so the group's object ID is
@@ -134,7 +134,7 @@ resource setPermissions 'Microsoft.Compute/virtualMachines/runCommands@2024-07-0
           # Set-Acl rather than icacls, and this is not a style preference.
           # icacls resolves every SID to an account name before it will write
           # an ACE, and an Entra-joined host cannot resolve a cloud-only group
-          # it has never seen — it fails with 1332, "No mapping between account
+          # it has never seen - it fails with 1332, "No mapping between account
           # names and security IDs was done". Set-Acl takes a SecurityIdentifier
           # object and writes the raw SID, which is what we actually want.
           $acl = Get-Acl -Path $uncPath
@@ -146,7 +146,7 @@ resource setPermissions 'Microsoft.Compute/virtualMachines/runCommands@2024-07-0
           $builtinUsers   = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')
 
           # The default ACL on a new Azure file share root is EXPLICIT, not
-          # inherited — a share root has no parent directory — so removing
+          # inherited - a share root has no parent directory - so removing
           # inheritance achieves nothing. The entry that matters is
           # Authenticated Users with Modify and full inheritance: leave it and
           # every user keeps Modify on every other user's profile.
@@ -176,7 +176,7 @@ resource setPermissions 'Microsoft.Compute/virtualMachines/runCommands@2024-07-0
           $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
             $creatorOwner, $modify, $containerAndObject, $childrenOnly, $allow)))
 
-          # AVD users: modify, THIS FOLDER ONLY — no inheritance. They can
+          # AVD users: modify, THIS FOLDER ONLY - no inheritance. They can
           # create their own folder and cannot open anyone else's.
           $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
             $avdUsers, $modify, $noInherit, $propagateNormally, $allow)))

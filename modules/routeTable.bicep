@@ -12,7 +12,7 @@ param tags object = {}
 param location string
 param routeTableName string
 
-@description('Internal IP of the hub firewall NVA — the next hop for all routes here.')
+@description('Internal IP of the hub firewall NVA - the next hop for all routes here.')
 param firewallInternalIp string
 
 resource routeTable 'Microsoft.Network/routeTables@2024-01-01' = {

@@ -1,6 +1,6 @@
 # Changelog
 
-Template spec versions are **not** immutable — Microsoft's guidance is that you
+Template spec versions are **not** immutable - Microsoft's guidance is that you
 can update an existing version for hotfixes or publish a new one, and the
 version is just a text string. So day-to-day iteration publishes over `dev`:
 
@@ -12,16 +12,29 @@ A numbered version is cut only when there is something worth keeping, and
 recorded below. **1.0.0 is reserved for the first release fit to put in front
 of a customer**, which this is not yet.
 
-## 0.3 — current
+## 0.3 - current
 
 Everything below has been built. Only the first group has been run against
 Azure.
 
 ## Fixed
 
+**The Basics tab described a template that no longer exists.** It called every deployment
+greenfield hub-and-spoke and said hybrid environments were not supported. Both were true
+a week ago. It now says what actually gets built depends on the next two tabs, and that
+hybrid builds the landing zone without session hosts.
+
+**The tags grid explains itself.** One row is one tag: Name is the key, Value is the
+value, both used exactly as typed, applied to the resource groups and every resource that
+supports tags. The grey text in an empty row is an example of the shape, not a value.
+
+A row with a name and no value would have failed the deployment - `pair.value` was read
+directly where the name was read safely. Both are safe now, and both are trimmed, so a
+stray space does not produce a tag key nobody can match on.
+
 **The FSLogix Run Command aborted before configuring anything.** Setting
 `WinHttpAutoProxySvc` to Automatic fails with "Access is denied" even though Run Command
-executes as SYSTEM — that service's own security descriptor refuses configuration
+executes as SYSTEM - that service's own security descriptor refuses configuration
 changes. The script stopped there, so the FSLogix registry settings and the restart
 after them never ran, and the host came up with no profile.
 
@@ -45,7 +58,7 @@ so the blade reports the session hosts as not configured and offers to create a 
 competing rule.
 
 Still open on Insights: ten valid performance counters are in the deployed rule, pass
-`Get-Counter` on a host, and never reach the workspace — the LogicalDisk queue lengths,
+`Get-Counter` on a host, and never reach the workspace - the LogicalDisk queue lengths,
 all four Memory counters and all four PhysicalDisk counters. The three Terminal Services
 counters that were also missing are explained and fixed (a wildcard on a single-instance
 object); these ten are not. The next successful deployment is the chance to read the
@@ -57,8 +70,8 @@ Microsoft's own AVD landing zone accelerator does not create a hub, treats an ex
 VNet as a first-class choice, and recommends a NAT gateway over a firewall for AVD
 egress. This template did the opposite on all three. It now follows theirs.
 
-**The hub is a choice, not an assumption.** `hubMode` — `none`, `create` or
-`existing` — and it only applies when creating VNets. Previously the hub was implied by
+**The hub is a choice, not an assumption.** `hubMode` - `none`, `create` or
+`existing` - and it only applies when creating VNets. Previously the hub was implied by
 the firewall question, which is why that question kept needing special cases bolted onto
 it.
 
@@ -68,7 +81,7 @@ workload peers into it. That is the default here, and `create` remains for a gre
 site where nobody else is going to build one. The wizard says as much where you choose.
 
 A created hub gets its gateway subnet, optionally an identity subnet for domain
-controllers, a Bastion subnet, and a firewall — Azure Firewall deployed with the
+controllers, a Bastion subnet, and a firewall - Azure Firewall deployed with the
 documented AVD egress rules, or the FortiGate NIC subnets with the appliance left to
 you. A firewall in a hub built here becomes the egress path for every created VNet,
 overriding `egressMode`; there is no sense in building one and routing around it.
@@ -80,7 +93,7 @@ resources, and creates nothing network-shaped. The privatelink DNS zone is linke
 whichever VNets those subnets belong to, deduplicated, since both are often the same one.
 
 **Peering to an existing hub** replaces building one. Both sides of a peering must
-exist, and the hub side can only be created when the hub is in the same subscription —
+exist, and the hub side can only be created when the hub is in the same subscription -
 a subscription-scoped template cannot deploy into another. When it is elsewhere, only
 the spoke side is created and `hubSidePeeringNotCreated` says so.
 
@@ -102,7 +115,7 @@ Azure Firewall, Bastion and identity-subnet parameter.
 **Build numbers**
 
 Every publish overwrites the same `dev` version, so nothing in Azure said which code
-was actually there — the cause of at least one afternoon spent debugging a stale
+was actually there - the cause of at least one afternoon spent debugging a stale
 template. `publish-templatespec.ps1` now increments a build number, stamps it into the
 template spec's version description with a UTC timestamp and the git commit, and writes
 it to `BUILD` at the repository root.
@@ -118,7 +131,7 @@ A description reading `(uncommitted changes)` means the published template does 
 match any commit. The number is only written after a successful publish, so a failed
 run does not leave the file ahead of Azure.
 
-**Identity model — new, not yet deployed**
+**Identity model - new, not yet deployed**
 
 The wizard opens with an Identity tab, immediately after Basics, carrying the first
 decision: `entraOnly` or `hybrid`.
@@ -131,7 +144,7 @@ against once a domain controller is in place. This template never creates sessio
 hosts under hybrid.
 
 Because of that sequencing, hybrid forces a hub whether or not a firewall is
-selected — the domain controller has to live somewhere — and the hub gains an
+selected - the domain controller has to live somewhere - and the hub gains an
 optional **identity subnet** for it, named and sized by you. `hybridNoIdentitySubnet`
 reports a hybrid deployment that did not define one, and `identitySubnetId` gives the
 subnet to build into.
@@ -143,20 +156,20 @@ What the identity model actually drives, and nothing else:
 | Session hosts | created and Entra joined | not created |
 | Hub | only with a firewall | always |
 | Storage | AADKERB + `kdc_enable_cloud_group_sids` | AADKERB, no tag |
-| Share NTFS | `Set-Acl` with cloud SIDs | skipped — no host to run it from |
+| Share NTFS | `Set-Acl` with cloud SIDs | skipped - no host to run it from |
 | Sign-in rights | VM User/Admin Login RBAC | Active Directory, no RBAC |
 
 Everything else is identical either way, **including group creation**. The groups
 carry Azure RBAC, and an Entra group holds synced users as happily as cloud-only
 ones. The caveat, which only bites once session hosts exist: a group created here is
 cloud-only and cannot be managed from on-premises AD, and file-level NTFS permissions
-resolve group SIDs from the user's Kerberos ticket — which for a hybrid identity
+resolve group SIDs from the user's Kerberos ticket - which for a hybrid identity
 carries its AD groups' SIDs. For NTFS specifically, a synced AD group is safer.
 Share-level access is unaffected.
 
 Entra Kerberos is deferred under hybrid until a new tick box, **the domain
 controller exists and Entra Connect is syncing**, is set. Until then the storage
-account is created without AADKERB and the admin consent script does not run — both
+account is created without AADKERB and the admin consent script does not run - both
 need identities already synced from Active Directory, and on a first pass there is no
 domain controller and no sync, so enabling them would configure something that cannot
 work. `entraKerberosDeferred` reports that state, which is the intended first-pass
@@ -174,7 +187,7 @@ The sequence for a hybrid customer is therefore:
    empty host pools.
 
 DNS servers are one field on the Identity tab, not a column on the Spokes grid. Every
-VNet the template creates uses them, which matches how customers actually run — one set
+VNet the template creates uses them, which matches how customers actually run - one set
 of domain controllers for the estate. The field only appears once the domain controller
 tick box is set, because on a first pass the controllers do not exist and pointing the
 VNets at them breaks resolution for everything, the storage private endpoint included.
@@ -184,7 +197,7 @@ included: they must forward to 168.63.129.16 or the storage account resolves to 
 public IP and profiles stop mounting. A spoke row can still carry its own `dnsServers`
 in a parameters file when one VNet needs different resolvers.
 
-**Network topology is its own choice — new, not yet deployed**
+**Network topology is its own choice - new, not yet deployed**
 
 The Hub tab is now the **Network** tab and opens with hub and spoke or standalone.
 
@@ -194,13 +207,13 @@ The firewall question and every hub field only appear under hub and spoke, becau
 standalone deployment has no hub to put a firewall in.
 
 Previously the topology was a side-effect of the firewall choice, which meant the only
-way to get standalone VNets was to decline a firewall — two unrelated decisions welded
+way to get standalone VNets was to decline a firewall - two unrelated decisions welded
 together.
 
 A hybrid standalone deployment has no hub for its domain controllers, so the subnet for
 them goes on the Subnets tab instead. `hybridStandaloneNoHub` reports that case.
 
-The Subnets tab asked for two names per subnet — a "key" and a name — when the key's
+The Subnets tab asked for two names per subnet - a "key" and a name - when the key's
 only job was to name the NSG. Now there is one name, used as typed, and the NSG is
 called `nsg-<that name>`. The tab's guidance is rewritten to say what each column is for
 rather than describing a derivation that no longer happens, and it no longer claims a
@@ -213,13 +226,13 @@ a single column, so there are two grid definitions and the deployment takes whic
 matches. `peerToHub` is read with safe access in the template, since the standalone grid
 does not produce it at all.
 
-The tab's intro text also predated the name columns — it still claimed every resource
+The tab's intro text also predated the name columns - it still claimed every resource
 name was derived from the spoke identifier, which stopped being true when the resource
 group and VNet became things you type.
 
 **Outbound access under standalone.** With no hub there is no firewall route, so every
 VNet that needs the internet must carry its own NAT gateway. The template already
-detected a spoke with neither, but only as a warning output read after the fact — by
+detected a spoke with neither, but only as a warning output read after the fact - by
 which point the session hosts were built and permanently unable to register, since they
 reach the AVD service over the internet to do so.
 
@@ -233,7 +246,7 @@ would have tried to peer with a VNet that was never created. Both peering module
 require a hub to exist, and `spokesPeeringSkippedNoHub` lists any spoke whose peering
 was skipped as a result.
 
-**Firewall decides whether a hub exists — new, not yet deployed**
+**Firewall decides whether a hub exists - new, not yet deployed**
 
 The Hub tab is now the Firewall tab, and the firewall choice comes first on it.
 Selecting none creates no hub at all: no hub resource group, no hub VNet, no route
@@ -248,13 +261,13 @@ A host in one cannot reach a host in another. Peer them directly, or select a
 firewall, if they need to talk. Each spoke needing outbound internet should have a
 NAT gateway.
 
-**Literal names for resource groups, VNets and subnets — new, not yet deployed**
+**Literal names for resource groups, VNets and subnets - new, not yet deployed**
 
 The forced `rg-`, `vnet-` and `snet-<spoke>-` prefixes are gone. The Spokes grid
 gains **Resource group name** and **VNet name**; the Subnets grid gains **Subnet
 name**. Each is used exactly as typed.
 
-The grids' `name` columns are now keys rather than name fragments — subnets
+The grids' `name` columns are now keys rather than name fragments - subnets
 reference their parent spoke by that key, and nothing is derived from it unless you
 leave a name blank, in which case the old pattern still applies. A parameter file
 written before these columns existed deploys to exactly the same resource names as
@@ -273,19 +286,19 @@ The Identity tab used to want the bootstrap managed identity's full resource ID 
 free text, pasted into every deployment. It now asks for nothing: the identity is
 located by name, and the name is the one `scripts/bootstrap-entra-identity.ps1`
 gives it. That script is ours, so the name is a convention rather than a
-customer-specific value — hard-coding a customer's names is the thing to avoid,
+customer-specific value - hard-coding a customer's names is the thing to avoid,
 standardising our own is not.
 
 A single tick box turns the Entra work on and off, on by default. Nothing else. The
 identity name and resource group stay as template parameters with the script's
-defaults, off the wizard entirely — prefilled required-looking boxes for a case that
+defaults, off the wizard entirely - prefilled required-looking boxes for a case that
 never comes up are worse than no boxes at all. Override them in a parameters file if
 the script was ever run with `-IdentityName` or `-ResourceGroup`.
 
 The prerequisite is unchanged and cannot be removed: the script runs once per
 tenant, as Global Administrator, before the first deployment. Granting Graph
 application permissions is an admin consent operation, and a portal deployment
-carries no Graph token — which is the entire reason this identity exists.
+carries no Graph token - which is the entire reason this identity exists.
 
 **Fixed since the last deployment attempt**
 
@@ -316,7 +329,7 @@ carries no Graph token — which is the entire reason this identity exists.
 - The three Terminal Services session counters in the AVD Insights data
   collection rule were specified as `\Terminal Services(*)\...`. Terminal
   Services is a single-instance performance object, so the wildcard matches
-  nothing and the counters silently collect no data — the same mistake the
+  nothing and the counters silently collect no data - the same mistake the
   module's own header warns about for `\Memory(*)`. Verified on a session host
   with `Get-Counter`: the `(*)` form fails, the bare form succeeds.
 - `WinHttpAutoProxySvc` and `iphlpsvc` are now set to Automatic and started.

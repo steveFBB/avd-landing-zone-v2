@@ -9,7 +9,7 @@
 
     VERSIONS ARE NOT IMMUTABLE. Microsoft's guidance is that you "can either
     update an existing version (for hotfixes) or publish a new version", and
-    the version is just a text string — any scheme will do.
+    the version is just a text string - any scheme will do.
 
     So the default here is 'dev'. Publish over it as often as you like while
     iterating, and deploy from it. Pass -Version explicitly only when you have

@@ -9,7 +9,7 @@
 // group does not affect it. The only route is a PATCH against the REST API.
 //
 // So this is a deployment script, using the same managed identity as the Entra
-// work. It needs Azure RBAC rather than Graph permissions — the caller grants
+// work. It needs Azure RBAC rather than Graph permissions - the caller grants
 // Desktop Virtualization Application Group Contributor on the AVD resource
 // group, which cannot reach anything outside it.
 //
@@ -44,7 +44,7 @@ param retainArtifacts bool = false
 var desktopsJson = string(desktops)
 
 // The identity holds Graph permissions for the Entra work, but nothing in
-// Azure beyond Reader. Renaming a desktop is an ARM write, so it needs a role —
+// Azure beyond Reader. Renaming a desktop is an ARM write, so it needs a role -
 // granted here rather than in the bootstrap, so it is scoped to the resource
 // group this deployment created and disappears with it.
 var appGroupContributorRoleId = '86240b0e-9422-4c43-887b-b61143f32ba8'

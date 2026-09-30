@@ -2,13 +2,13 @@
 //
 // One module handles both flavours, selected by nsgType:
 //
-//   'avd'   — outbound allow rules for the documented AVD service
+//   'avd'   - outbound allow rules for the documented AVD service
 //             dependencies. These do NOT restrict outbound traffic: Azure's
 //             default AllowInternetOutBound rule still applies, so this is
 //             documentation of required destinations, not enforcement.
 //             Real egress control needs a firewall or explicit deny rules.
 //
-//   'empty' — no custom rules. Only Azure's defaults apply. Exists so the
+//   'empty' - no custom rules. Only Azure's defaults apply. Exists so the
 //             subnet has an NSG to attach customer rules to later without
 //             redeploying the VNet.
 

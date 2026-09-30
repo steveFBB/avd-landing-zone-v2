@@ -2,13 +2,13 @@
 //
 // One account, shared across every host pool. A storage account supports
 // only one identity source for Azure Files, so every host pool in a
-// deployment shares the same identity model — which for this template is
+// deployment shares the same identity model - which for this template is
 // cloud-only Microsoft Entra Kerberos.
 //
 // Setting directoryServiceOptions to AADKERB here makes the Storage resource
 // provider create an application registration for the account. That
 // application still needs admin consent and the kdc_enable_cloud_group_sids
-// tag before anyone can mount the share — storageEntraKerberos.bicep does
+// tag before anyone can mount the share - storageEntraKerberos.bicep does
 // both. NTFS permissions on the share root are set separately again, from a
 // session host, because they need a mounted client.
 //
@@ -49,7 +49,7 @@ param storageAccessTier string
 
 param fileShareName string
 
-@description('Share quota in GiB. Premium file shares are provisioned — you pay for the quota, not consumption.')
+@description('Share quota in GiB. Premium file shares are provisioned - you pay for the quota, not consumption.')
 @minValue(100)
 @maxValue(102400)
 param fileShareQuotaGiB int

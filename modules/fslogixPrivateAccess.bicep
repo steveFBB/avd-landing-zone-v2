@@ -7,7 +7,7 @@
 //
 // All three live in the storage resource group. The private endpoint's NIC
 // consumes an address from a subnet in the AVD spoke, which is in a
-// different resource group — that is normal; the PE resource itself belongs
+// different resource group - that is normal; the PE resource itself belongs
 // here.
 //
 // Without the DNS zone group, the endpoint gets a private IP but nothing
@@ -21,7 +21,7 @@
 @description('Tags applied to every resource in this module that supports them.')
 param tags object = {}
 
-@description('Region for the private endpoint. The DNS zone is always global — that is not a choice Azure offers.')
+@description('Region for the private endpoint. The DNS zone is always global - that is not a choice Azure offers.')
 param location string
 
 @description('Resource ID of the storage account to expose privately.')
@@ -53,7 +53,7 @@ resource zoneLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-0
       virtualNetwork: {
         id: vnet.id
       }
-      // Always false for privatelink zones — these link VNets for
+      // Always false for privatelink zones - these link VNets for
       // resolution, not for registering the VNets' own records.
       registrationEnabled: false
     }

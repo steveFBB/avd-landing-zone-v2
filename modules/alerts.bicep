@@ -8,7 +8,7 @@
 // THRESHOLDS ARE JUDGEMENT, NOT DOCUMENTATION
 //
 // Microsoft publishes no threshold guidance for pooled multi-session hosts.
-// The defaults here are deliberately loose enough to survive a logon storm —
+// The defaults here are deliberately loose enough to survive a logon storm -
 // a 5-minute window on CPU would page you every weekday at nine.
 //
 // skipQueryValidation IS ON, AND HAS TO BE
@@ -84,7 +84,7 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
 // WVDAgentHealthStatus is a change log, so a naive filter on Status fires on
 // every historical blip. arg_max gives the current state per host.
 //
-// Hosts that are deliberately shut down are excluded — a scaling plan or a
+// Hosts that are deliberately shut down are excluded - a scaling plan or a
 // monthly rotation should not page anyone.
 var sessionHostHealthQuery = '''
 WVDAgentHealthStatus
@@ -214,7 +214,7 @@ resource connectionFailureAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-
 // FSLogix profile failures
 // -----------------------------------------------------------------------------
 // Built on channel and level rather than event IDs. Microsoft publishes no
-// FSLogix event ID table — the IDs quoted around the internet are community
+// FSLogix event ID table - the IDs quoted around the internet are community
 // folklore, and pinning an alert to unverified IDs means it silently stops
 // matching when they change.
 //
@@ -286,7 +286,7 @@ resource fslogixFailureAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01'
 // Disk free space
 // -----------------------------------------------------------------------------
 // A log alert rather than a metric alert, because there is no platform metric
-// for free space — the OS disk metrics cover IOPS, throughput, latency and
+// for free space - the OS disk metrics cover IOPS, throughput, latency and
 // queue depth only. This depends on % Free Space being in the data collection
 // rule, which is why avdInsightsDcr.bicep adds it to Microsoft's set.
 var diskSpaceQuery = '''
@@ -352,7 +352,7 @@ resource diskSpaceAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if
 // -----------------------------------------------------------------------------
 // Platform metrics, so no agent involved and nothing to collect. Scoped to the
 // session host resource group rather than to named VMs, which means hosts
-// added or rebuilt later are covered with no template change — exactly what a
+// added or rebuilt later are covered with no template change - exactly what a
 // rotating pooled host pool needs.
 resource cpuAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployMetricAlerts) {
   name: 'alert-avd-session-host-cpu'
@@ -360,7 +360,7 @@ resource cpuAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployMetri
   // Metric alerts are always global.
   location: 'global'
   properties: {
-    description: 'Session host CPU is sustained above the threshold. A 15-minute window is deliberate — logon storms peg CPU for two or three minutes routinely.'
+    description: 'Session host CPU is sustained above the threshold. A 15-minute window is deliberate - logon storms peg CPU for two or three minutes routinely.'
     severity: 2
     enabled: true
     scopes: [

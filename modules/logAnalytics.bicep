@@ -60,7 +60,7 @@ resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
 // Built-in tables
 // -----------------------------------------------------------------------------
 // Perf and Event are built-in, but they are NOT present the instant a workspace
-// is created — they materialise a little later. A data collection rule that
+// is created - they materialise a little later. A data collection rule that
 // names them as an output stream is rejected with InvalidOutputTable until they
 // exist, and a log alert querying Perf fails with a permissions-flavoured error
 // that says nothing useful.
@@ -96,6 +96,6 @@ output workspaceId string = workspace.id
 output workspaceName string = workspace.name
 
 @description('''Names of the built-in tables this module ensured exist. Anything that
-consumes Perf or Event — the AVD Insights data collection rule, the log alerts — should
+consumes Perf or Event - the AVD Insights data collection rule, the log alerts - should
 depend on this rather than on the workspace alone.''')
 output builtInTables array = ensureBuiltInTables ? [perfTable!.name, eventTable!.name] : []

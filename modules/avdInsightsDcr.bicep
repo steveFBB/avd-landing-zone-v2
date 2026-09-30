@@ -6,7 +6,7 @@
 //   1. Control plane diagnostics on the host pool, application groups and
 //      workspace. Those produce the WVD* tables and are already wired up by
 //      avdHostPool.bicep and friends.
-//   2. Session host telemetry — performance counters and event logs — which is
+//   2. Session host telemetry - performance counters and event logs - which is
 //      what this rule collects, delivered by the Azure Monitor Agent on each
 //      host.
 //
@@ -47,7 +47,7 @@ param dcrName string = 'dcr-avd-insights'
 param logAnalyticsWorkspaceId string
 
 @description('''Names of the built-in tables the caller has ensured exist. Not used in
-the rule — it is here so that passing it creates a real dependency on those tables, which
+the rule - it is here so that passing it creates a real dependency on those tables, which
 must exist before a DCR naming Perf or Event as an output stream will be accepted.''')
 param requiredTables array = []
 
@@ -87,7 +87,7 @@ var thirtySecondCounters = union(
 //
 // Level 0 is included alongside 4 deliberately. Plenty of providers write
 // informational events as LogAlways rather than Information, and FSLogix is
-// one of them — filtering on Level=4 alone loses much of what Microsoft's
+// one of them - filtering on Level=4 alone loses much of what Microsoft's
 // documented set asks for.
 var errorAndWarning = '*[System[(Level=2 or Level=3)]]'
 var errorWarningAndInfo = '*[System[(Level=2 or Level=3 or Level=4 or Level=0)]]'

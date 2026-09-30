@@ -9,13 +9,13 @@
 // template still deploys before the groups exist.
 //
 // This controls WHO can reach the share. It does not set the NTFS permissions
-// on files and directories inside it — that is fslogixNtfsPermissions.bicep,
+// on files and directories inside it - that is fslogixNtfsPermissions.bicep,
 // which needs a mounted client and so runs on a session host.
 //
 // SCOPE: THE STORAGE ACCOUNT, NOT THE SHARE
 //
-// A share-scoped assignment is tighter — it would not extend to a second share
-// added to the same account later — but Azure RBAC only surfaces assignments
+// A share-scoped assignment is tighter - it would not extend to a second share
+// added to the same account later - but Azure RBAC only surfaces assignments
 // made at the scope you are looking at or above it. A share-scoped assignment
 // is therefore invisible on the storage account's Access Control blade, which
 // is the first place any administrator looks. The predictable result is
@@ -24,7 +24,7 @@
 //
 // A permission model nobody can see is worse than a slightly broader one, so
 // these are assigned at the account. The trade is real though: if this account
-// ever gains a second file share — MSIX app attach, a department share — these
+// ever gains a second file share - MSIX app attach, a department share - these
 // groups reach it too. Put other shares on another account, or move these
 // assignments down to the share and accept the visibility cost.
 //

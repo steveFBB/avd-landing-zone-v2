@@ -156,7 +156,7 @@ resource kerberosSetup 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
       echo "Service principal: ${STORAGE_SP_ID}"
 
       # ---------------------------------------------------------------------
-      # 1. Admin consent — equivalent to the "Grant admin consent" button.
+      # 1. Admin consent - equivalent to the "Grant admin consent" button.
       # ---------------------------------------------------------------------
       # Graph will happily create a second grant for the same client/resource
       # pair, so check first and patch rather than POSTing blindly.

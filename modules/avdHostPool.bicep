@@ -6,7 +6,7 @@
 //
 // The registration token is created here with an expiry passed in from
 // main.bicep, so every host pool in a deployment shares the same window.
-// It is deliberately NOT exposed as an output — deployment outputs are
+// It is deliberately NOT exposed as an output - deployment outputs are
 // retained in deployment history, and a registration token is a short-lived
 // credential. Fetch it when you need it:
 //
@@ -20,19 +20,19 @@ param location string
 param hostPoolName string
 param friendlyName string
 
-@description('Maximum concurrent sessions per session host. Depends on VM size — roughly 6-8 for 2 vCPU, 10-12 for 4 vCPU, 16-20 for 8 vCPU.')
+@description('Maximum concurrent sessions per session host. Depends on VM size - roughly 6-8 for 2 vCPU, 10-12 for 4 vCPU, 16-20 for 8 vCPU.')
 @minValue(1)
 @maxValue(999)
 param maxSessionLimit int
 
-@description('Power hosts on when a user connects. Requires the AVD service principal to hold Desktop Virtualization Power On Contributor on the session host subscription — a one-time step outside this template.')
+@description('Power hosts on when a user connects. Requires the AVD service principal to hold Desktop Virtualization Power On Contributor on the session host subscription - a one-time step outside this template.')
 param startVMOnConnect bool
 
 @description('''Custom RDP properties, semicolon separated.
 
 targetisaadjoined:i:1 is not optional for this design. Session hosts are
 Entra-joined, and without it a connection from any client that is not Entra
-joined to the same tenant is refused — which includes the web, macOS, iOS and
+joined to the same tenant is refused - which includes the web, macOS, iOS and
 Android clients always, and a Windows PC that is merely signed in rather than
 joined. The symptom is a credential prompt that never accepts a correct
 password, with nothing logged that points at the cause.

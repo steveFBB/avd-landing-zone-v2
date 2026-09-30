@@ -15,7 +15,7 @@
 // dependsOn.
 //
 // Names are supplied by the caller, exactly as the customer typed them. The
-// old derived pattern — vnet-<spoke>, snet-<spoke>-<subnet> — survives only as
+// old derived pattern - vnet-<spoke>, snet-<spoke>-<subnet> - survives only as
 // a fallback when a name is left blank, so parameter files written before the
 // name columns existed still produce the same resources.
 
@@ -58,7 +58,7 @@ resolve an Active Directory domain, so a session host that cannot reach a DC by 
 fails to join, and the deployment fails with it.
 
 Setting this makes those servers responsible for ALL resolution from the VNet, privatelink
-included — the domain controllers must forward to Azure DNS (168.63.129.16) or the
+included - the domain controllers must forward to Azure DNS (168.63.129.16) or the
 storage account resolves to its public IP and profiles stop mounting.''')
 param dnsServers array = []
 
@@ -105,7 +105,7 @@ resource natGateway 'Microsoft.Network/natGateways@2024-01-01' existing = if (!e
 resource snets 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = [
   for (subnet, i) in subnets: {
     parent: vnet
-    // Named exactly as the caller resolved it — no prefix is added here.
+    // Named exactly as the caller resolved it - no prefix is added here.
     name: subnet.name
     properties: {
       addressPrefix: subnet.prefix

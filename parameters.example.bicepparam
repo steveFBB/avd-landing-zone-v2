@@ -1,10 +1,10 @@
 // =============================================================================
-// AVD landing zone — v2 parameters
+// AVD landing zone - v2 parameters
 // =============================================================================
 // Copy per customer and edit. Real customer files are gitignored.
 //
 // IDENTITY MODEL: CLOUD-ONLY. FSLogix storage uses Microsoft Entra Kerberos
-// with cloud-only identities — no domain controller, no custom VNet DNS, no
+// with cloud-only identities - no domain controller, no custom VNet DNS, no
 // on-premises connectivity. Session hosts must be Entra-joined and running
 // Windows 11 24H2+ or Server 2025.
 //
@@ -57,7 +57,7 @@ param avdResourceGroupName = ''
 //
 // Microsoft's model is only the third. A hub carries the customer's gateway,
 // firewall and domain controllers, so creating one means owning part of their
-// network design — right for a greenfield site, questionable where they already
+// network design - right for a greenfield site, questionable where they already
 // have Azure.
 param hubMode = 'none'
 
@@ -127,10 +127,10 @@ param firewallPrivateIp = ''
 //
 //   name          short name; drives rg-<name>, vnet-<name>, rt-<name>
 //   addressPrefix the VNet address space
-//   role          'avd'  — session hosts and the storage private endpoint
+//   role          'avd'  - session hosts and the storage private endpoint
 //                          land here; its subnets get private endpoint
 //                          network policies disabled
-//                 'none' — ordinary spoke
+//                 'none' - ordinary spoke
 //                 Exactly one spoke should have role 'avd'.
 //   peerToHub     create hub<->spoke peerings
 //   natGateway    create a NAT gateway + public IP in this spoke, giving it
@@ -138,7 +138,7 @@ param firewallPrivateIp = ''
 //                 VNets, so each spoke needing one pays for its own
 //                 (roughly £25-30/month plus data processing).
 //                 Not needed when hubFirewallType routes traffic to a
-//                 firewall that provides egress — and do not use both on
+//                 firewall that provides egress - and do not use both on
 //                 the same subnet, because the route table wins and the NAT
 //                 gateway bills for nothing.
 
@@ -165,11 +165,11 @@ param spokes = [
 // Matched to their spoke by the `spoke` field, which must equal one of the
 // spokes[].name values above.
 //
-//   nsgType 'avd'   — documented AVD outbound allow rules. NOTE: these do
+//   nsgType 'avd'   - documented AVD outbound allow rules. NOTE: these do
 //                     not restrict outbound traffic; Azure's default
 //                     AllowInternetOutBound still applies. They document
 //                     required destinations, they do not enforce egress.
-//           'empty' — no custom rules; an attachment point for customer
+//           'empty' - no custom rules; an attachment point for customer
 //                     rules added later.
 //
 //   useNatGateway  attach this subnet to its spoke's NAT gateway. Ignored
@@ -208,7 +208,7 @@ param subnets = [
 // rather than dependent on the template's API version.
 //
 // WARNING: a private subnet with no NAT gateway and no firewall route has
-// NO internet access. The deployment still SUCCEEDS — the failure appears
+// NO internet access. The deployment still SUCCEEDS - the failure appears
 // later as session hosts that never register. Check the
 // spokesWithoutOutbound deployment output before you deploy.
 //
@@ -228,7 +228,7 @@ param deployStorage = true
 param storageRgName = 'rg-storage'
 
 // MUST be globally unique across all of Azure. Lowercase letters and digits
-// only, 3-24 characters. Change this before every deployment — the name
+// only, 3-24 characters. Change this before every deployment - the name
 // below will already be taken.
 param storageAccountName = 'stfslogixchangeme01'
 
@@ -244,7 +244,7 @@ param storageAccessTier = 'Hot'
 
 param fileShareName = 'profiles'
 
-// Premium file shares are provisioned — you pay for the quota, not usage.
+// Premium file shares are provisioned - you pay for the quota, not usage.
 param fileShareQuotaGiB = 512
 
 // --- Storage security --------------------------------------------------------
@@ -319,7 +319,7 @@ param avdAdminsGroupName = 'AVD Admins'
 
 // Grant admin consent and apply the kdc_enable_cloud_group_sids tag to the
 // storage account's application. Both are mandatory for cloud-only Entra
-// Kerberos — without the tag, Microsoft's wording is that authentication
+// Kerberos - without the tag, Microsoft's wording is that authentication
 // fails. Requires the bootstrap managed identity.
 param configureEntraKerberos = true
 
@@ -365,7 +365,7 @@ param collectPerProcessInputDelay = false
 // An action group plus six rules: session host availability, connection
 // failure rate, FSLogix errors, disk space, CPU and memory.
 //
-// Thresholds are judgement, not Microsoft guidance — they publish none for
+// Thresholds are judgement, not Microsoft guidance - they publish none for
 // pooled multi-session. The windows are deliberately long enough to survive a
 // logon storm.
 param deployAlerts = true
@@ -394,23 +394,23 @@ param diskFreeAlertThresholdPercent = 10
 //   name             becomes hp-<name> and ag-<name>-desktop
 //   friendlyName     what users see in the AVD client
 //   maxSessionLimit  concurrent sessions per session host. Depends on VM
-//                    size — roughly 6-8 for 2 vCPU, 10-12 for 4 vCPU,
+//                    size - roughly 6-8 for 2 vCPU, 10-12 for 4 vCPU,
 //                    16-20 for 8 vCPU.
 //   startVMOnConnect power hosts on when a user connects. Requires the AVD
 //                    service principal to hold Desktop Virtualization Power
-//                    On Contributor on the subscription — a one-time manual
+//                    On Contributor on the subscription - a one-time manual
 //                    step. Leave false until that is done.
-//   sessionHostCount session hosts to build for this pool. Optional — omit
+//   sessionHostCount session hosts to build for this pool. Optional - omit
 //                    or set 0 to create the pool with no hosts.
 //   vmSize           session host size. Only used when sessionHostCount > 0.
 //   desktopFriendlyName  what users see instead of "SessionDesktop" in their
 //                    client. Optional; omit to leave it as SessionDesktop.
-//                    Needs the bootstrap managed identity — AVD has no ARM property
+//                    Needs the bootstrap managed identity - AVD has no ARM property
 //                    for this, so it is done with a REST call.
 //   vmNamePrefix     optional. Defaults to the pool name, lowercased, with
 //                    hyphens stripped, truncated to 11 characters. Set it
 //                    explicitly if two pools would truncate to the same
-//                    thing — duplicateSessionHostPrefixes flags that.
+//                    thing - duplicateSessionHostPrefixes flags that.
 //
 // The control plane lands in the AVD spoke's resource group, so one spoke
 // must have role = 'avd'.
@@ -433,7 +433,7 @@ param avdWorkspaceFriendlyName = 'AVD Workspace'
 // Registration token expiry defaults to 30 days from deployment time.
 // Leave it alone unless you need a different window.
 //
-// The token is not a deployment output — deployment history persists, and a
+// The token is not a deployment output - deployment history persists, and a
 // registration token is a credential. The session host module reads it
 // directly from the host pool and puts it in the DSC extension's
 // protectedSettings, so it never passes through an output at all. Fetch it
@@ -504,7 +504,7 @@ param sessionHostEnrolWithIntune = false
 // FSLOGIX ON THE SESSION HOSTS
 // -----------------------------------------------------------------------------
 
-// The gallery images ship FSLogix installed but NOT configured — the binaries
+// The gallery images ship FSLogix installed but NOT configured - the binaries
 // are there and nothing points them at a share, which is why a freshly built
 // host quietly keeps local profiles. This sets the profile container registry
 // values and enables cloud Kerberos ticket retrieval, without which the host

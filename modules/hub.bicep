@@ -5,9 +5,9 @@
 // for.
 //
 // Optional subnets:
-//   - Firewall NIC subnets — only when firewallType is an NVA that needs
+//   - Firewall NIC subnets - only when firewallType is an NVA that needs
 //     them (currently 'fortigate')
-//   - AzureBastionSubnet — name is fixed by Azure and the prefix must be
+//   - AzureBastionSubnet - name is fixed by Azure and the prefix must be
 //     /26 or larger; both are enforced here rather than left to the caller
 //
 // This is a cloud-only design: identities live in Entra ID, so there is no
@@ -37,20 +37,20 @@ param gatewaySubnetPrefix string
 ])
 param firewallType string
 
-// FortiGate NIC prefixes — ignored unless firewallType == 'fortigate'.
+// FortiGate NIC prefixes - ignored unless firewallType == 'fortigate'.
 param fgtExternalPrefix string = ''
 param fgtInternalPrefix string = ''
 param fgtHaPrefix string = ''
 param fgtMgmtPrefix string = ''
 
 @description('''Prefix for AzureFirewallSubnet. The name is fixed by Azure and the
-prefix must be /26 or larger. A /26 is enough at any scale — the firewall provisions
+prefix must be /26 or larger. A /26 is enough at any scale - the firewall provisions
 extra instances inside it as it scales, and it never needs enlarging.''')
 param azureFirewallSubnetPrefix string = ''
 
 @description('''Prefix for AzureFirewallManagementSubnet, /26 or larger.
 
-Only used on the Basic tier, where a management NIC is mandatory rather than optional —
+Only used on the Basic tier, where a management NIC is mandatory rather than optional -
 Microsoft separates their management traffic from customer traffic because Basic has
 limited capacity. Standard and Premium do not need it.''')
 param azureFirewallManagementSubnetPrefix string = ''
@@ -69,7 +69,7 @@ param identitySubnetPrefix string = ''
 @description('Name of the identity subnet, as you want it. Only used when identitySubnetPrefix is set.')
 param identitySubnetName string = 'snet-identity'
 
-@description('Create AzureBastionSubnet in the hub. The subnet itself only — no Bastion host is deployed by this template.')
+@description('Create AzureBastionSubnet in the hub. The subnet itself only - no Bastion host is deployed by this template.')
 param deployBastionSubnet bool = false
 
 @description('Prefix for AzureBastionSubnet. Azure requires /26 or larger; validated below.')
@@ -109,7 +109,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   }
 }
 
-// GatewaySubnet — name fixed by Azure. Always created.
+// GatewaySubnet - name fixed by Azure. Always created.
 resource snetGateway 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
   parent: vnet
   name: 'GatewaySubnet'
@@ -172,7 +172,7 @@ resource snetFgtMgmt 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if
 }
 
 //
-// Azure Firewall subnets — names fixed by Azure, /26 minimum
+// Azure Firewall subnets - names fixed by Azure, /26 minimum
 //
 resource snetAzureFirewall 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployAzureFirewallSubnet) {
   parent: vnet
@@ -206,7 +206,7 @@ resource snetAzureFirewallMgmt 'Microsoft.Network/virtualNetworks/subnets@2024-0
 }
 
 //
-// AzureBastionSubnet — name is fixed by Azure, /26 minimum
+// AzureBastionSubnet - name is fixed by Azure, /26 minimum
 //
 resource snetBastion 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployBastionSubnet) {
   parent: vnet
@@ -226,7 +226,7 @@ resource snetBastion 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if
 }
 
 //
-// Identity subnet — for domain controllers added after the landing zone.
+// Identity subnet - for domain controllers added after the landing zone.
 //
 // Last in the chain for the same reason as the others: Azure locks the VNet
 // during a subnet write and rejects parallel operations against it.

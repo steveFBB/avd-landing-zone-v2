@@ -6,18 +6,18 @@
 // The Microsoft Graph Bicep extension went GA in July 2025 and would express
 // this in six lines. It cannot be used here. Extensions that need the OAuth
 // on-behalf-of flow fail with 401 inside a Template Spec, and the Azure portal's
-// deployment flow carries no Graph token at all — the documented symptom is
+// deployment flow carries no Graph token at all - the documented symptom is
 // "Insufficient privileges to complete the operation". Microsoft has an open
 // issue for it with no committed date.
 //
 // A deployment script with a user-assigned managed identity does carry an
 // app-only Graph token, which is why this works from a portal Create blade.
 // The cost is the one-time bootstrap that grants the identity its Graph app
-// roles — see scripts/bootstrap-entra-identity.ps1.
+// roles - see scripts/bootstrap-entra-identity.ps1.
 //
 // PERMISSIONS THE IDENTITY NEEDS
 //   Group.ReadWrite.All   (Graph, application)
-//   Reader                (Azure RBAC, subscription) — only so the container's
+//   Reader                (Azure RBAC, subscription) - only so the container's
 //                         automatic `az login --identity` finds a subscription
 //
 // Group.Create alone is not enough: the script reads before it writes, so that
@@ -127,7 +127,7 @@ resource groups 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
 
       # printf rather than a heredoc: a heredoc terminator has to sit at column
       # zero, which reads badly inside an indented Bicep string and fails
-      # silently when it slips — bash just warns and writes the terminator into
+      # silently when it slips - bash just warns and writes the terminator into
       # the file, and the deployment then dies parsing the output as JSON.
       printf '{ "usersGroupObjectId": "%s", "adminsGroupObjectId": "%s" }\n' \
         "${USERS_ID}" "${ADMINS_ID}" > "${AZ_SCRIPTS_OUTPUT_PATH}"

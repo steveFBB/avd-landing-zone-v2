@@ -2,7 +2,7 @@
 // Azure Firewall with an AVD egress policy
 // =============================================================================
 // The alternative to the FortiGate path, and the only one this template can
-// deploy end to end — a FortiGate needs marketplace terms accepted per
+// deploy end to end - a FortiGate needs marketplace terms accepted per
 // subscription, a plan block and licensing decisions a template cannot make.
 //
 // It is also the better of the two for route tables. With FortiGate you have
@@ -14,7 +14,7 @@
 //
 // Session hosts Entra join on first boot. If a spoke's default route is
 // pointing at the firewall before the firewall has rules, that join fails and
-// the host registers as unusable — the failure we have already seen once in
+// the host registers as unusable - the failure we have already seen once in
 // this project. The firewall therefore depends on its rule collection group,
 // and main.bicep makes the route tables depend on the firewall.
 //
@@ -47,7 +47,7 @@ param tier string = 'Standard'
 @description('Resource ID of the hub VNet. AzureFirewallSubnet is resolved from it.')
 param hubVnetId string
 
-@description('Address ranges allowed to egress through the firewall — normally the spoke VNet prefixes.')
+@description('Address ranges allowed to egress through the firewall - normally the spoke VNet prefixes.')
 param allowedSourceAddresses array
 
 @description('Log Analytics workspace resource ID for firewall diagnostics. Empty skips them.')
@@ -121,7 +121,7 @@ resource policy 'Microsoft.Network/firewallPolicies@2024-05-01' = {
 // everything AVD needs lives in a single group. Splitting it later means
 // chaining the groups with dependsOn.
 //
-// Processing order is fixed by Azure: DNAT, then network, then application —
+// Processing order is fixed by Azure: DNAT, then network, then application -
 // priority does not change that. A network rule that matches ends evaluation,
 // so the network collection is deliberately narrow and the broad FQDN matching
 // happens in the application collection where it is logged by hostname.
@@ -246,7 +246,7 @@ resource rules 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2024-05-
           {
             // Entra join and Azure RBAC sign-in. Neither of these is in the
             // AVD required-URL list, and pas.windows.net in particular is not
-            // reliably covered by the AzureActiveDirectory service tag —
+            // reliably covered by the AzureActiveDirectory service tag -
             // without it the device joins and then nobody can sign in.
             name: 'entra-join-and-signin'
             ruleType: 'ApplicationRule'

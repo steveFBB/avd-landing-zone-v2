@@ -6,7 +6,7 @@
 //
 // This module also assigns the Desktop Virtualization User role to the AVD
 // users group. Without that assignment the desktop exists but no one can
-// see it in the client — which was a gap in v1 that had to be fixed by hand
+// see it in the client - which was a gap in v1 that had to be fixed by hand
 // after every deployment.
 
 @description('Tags applied to every resource in this module that supports them.')
@@ -25,7 +25,7 @@ param avdUsersGroupObjectId string = ''
 @description('Log Analytics workspace resource ID for diagnostics. Empty string skips the diagnostic setting.')
 param logAnalyticsWorkspaceId string = ''
 
-// Desktop Virtualization User — grants
+// Desktop Virtualization User - grants
 // Microsoft.DesktopVirtualization/applicationGroups/useApplications/action,
 // assigned at application group scope.
 var desktopVirtualizationUserRoleId = '1d18fff3-a72a-46b5-b4a9-0b38a3cd7e63'

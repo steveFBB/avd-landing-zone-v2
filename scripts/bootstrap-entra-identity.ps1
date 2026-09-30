@@ -17,7 +17,7 @@
 
     WHO HAS TO RUN THIS
     Granting Microsoft Graph app roles specifically requires Privileged Role
-    Administrator or Global Administrator — Application Administrator is not
+    Administrator or Global Administrator - Application Administrator is not
     enough, which catches people out. Assigning Reader on the subscription also
     needs Owner or User Access Administrator there.
 
@@ -36,7 +36,7 @@
                                               script, and that fails when the
                                               identity can see no subscription.
 
-    These are tenant-wide permissions. Read them before running this — they are
+    These are tenant-wide permissions. Read them before running this - they are
     not trivial, and they are the price of doing the Entra work from a portal
     blade rather than by hand.
 
@@ -63,7 +63,7 @@ $ErrorActionPreference = 'Stop'
 
 # ErrorActionPreference does not apply to native commands before PowerShell
 # 7.3, so a failing `az` call returns a non-zero exit code and the script sails
-# on with empty variables. Every az call below is checked with this instead —
+# on with empty variables. Every az call below is checked with this instead -
 # without it the script can print "Bootstrap complete" having granted nothing.
 function Assert-LastExitCode {
     param([string]$What)
@@ -102,7 +102,7 @@ Assert-LastExitCode 'az identity show'
 
 # The managed identity resource provider returns 'resourcegroups' in lower
 # case. ARM does not care, but anything validating the ID against a
-# case-sensitive pattern does — including the portal form — so normalise it
+# case-sensitive pattern does - including the portal form - so normalise it
 # here rather than leaving the operator to notice a single letter.
 $identityId = $identityId -replace '/resourcegroups/', '/resourceGroups/'
 
@@ -187,7 +187,7 @@ if (-not $SkipReaderAssignment) {
 
 Write-Host "`nBootstrap complete."
 Write-Host "`nPaste this into the landing zone form, on the Entra ID tab."
-Write-Host "Printed unindented on purpose — selecting an indented line picks up"
+Write-Host "Printed unindented on purpose - selecting an indented line picks up"
 Write-Host "the leading spaces, which the form rejects without saying why:"
 Write-Host ""
 Write-Host $identityId

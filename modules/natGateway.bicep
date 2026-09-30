@@ -1,7 +1,7 @@
 // NAT gateway for outbound internet access
 //
 // Deployed once per spoke that asks for one. A NAT gateway cannot be
-// attached to subnets in more than one VNet, so spokes cannot share one —
+// attached to subnets in more than one VNet, so spokes cannot share one -
 // each spoke needing outbound access pays for its own gateway and public
 // IP. Attaching additional subnets within the same spoke is free beyond
 // data processing, which is why the per-spoke and per-subnet decisions are

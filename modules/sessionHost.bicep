@@ -7,7 +7,7 @@
 // ORDER MATTERS. The Entra join must complete before the AVD agent installs,
 // or the agent registers the host as domain-joined and sign-in fails with no
 // obvious cause. That is what the dependsOn between the two extensions is
-// for — it is not decoration.
+// for - it is not decoration.
 //
 // The registration token is read here rather than passed in, so it never
 // appears in a module output or in deployment history. listRegistrationTokens()
@@ -52,12 +52,12 @@ param osDiskType string
 @description('''OS disk size in GB. 0 uses the image default, which is 128 GB for the
 Windows 11 multi-session images.
 
-Disks grow but never shrink, and the value must be at least the image default — Azure
+Disks grow but never shrink, and the value must be at least the image default - Azure
 rejects anything smaller. Profiles live on the FSLogix share, so this mostly matters for
 locally installed applications and the page file.''')
 param osDiskSizeGB int = 0
 
-@description('URL of the AVD DSC configuration package. Microsoft version-stamps this and does not publish the current version — see the README.')
+@description('URL of the AVD DSC configuration package. Microsoft version-stamps this and does not publish the current version - see the README.')
 param artifactsLocation string
 
 
@@ -85,7 +85,7 @@ param dataCollectionRuleId string = ''
 
 @description('''Configure FSLogix profile containers and cloud Kerberos on each host.
 
-The gallery images ship FSLogix installed but NOT configured — the binaries are
+The gallery images ship FSLogix installed but NOT configured - the binaries are
 there and nothing points them at a share, which is why a freshly built host has
 no profile container. Off leaves that to an image pipeline or Intune.''')
 param configureFslogix bool = false
@@ -239,7 +239,7 @@ resource vms 'Microsoft.Compute/virtualMachines@2024-07-01' = [
 // Entra join. This must finish before the AVD agent goes on.
 //
 // There is no domain join path here on purpose. A hybrid deployment does not
-// create session hosts at all — the landing zone is built, a domain controller
+// create session hosts at all - the landing zone is built, a domain controller
 // is added afterwards, and hosts are created by a separate process once it
 // exists. main.bicep enforces that; this module only ever builds Entra-joined
 // hosts.
@@ -316,7 +316,7 @@ resource monitorAgent 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' 
 
 // Associates the host with the data collection rule. An extension resource, so
 // it is scoped to the VM and carries no location of its own. The fixed name
-// makes it idempotent across host rotations — a host rebuilt under the same
+// makes it idempotent across host rotations - a host rebuilt under the same
 // name re-creates the association cleanly.
 resource dcrAssociation 'Microsoft.Insights/dataCollectionRuleAssociations@2023-03-11' = [
   for i in range(startIndex, sessionHostCount): if (!empty(dataCollectionRuleId)) {
@@ -419,7 +419,7 @@ resource fslogixConfiguration 'Microsoft.Compute/virtualMachines/runCommands@202
           Set-ItemProperty -Path $fslogix -Name FlipFlopProfileDirectoryName -Value 1 -Type DWord
 
           # ---------------------------------------------------------------
-          # Entra Kerberos service prerequisites — BEST EFFORT.
+          # Entra Kerberos service prerequisites - BEST EFFORT.
           # ---------------------------------------------------------------
           # Both are documented prerequisites and must be RUNNING, not merely
           # present. On Windows 11 multi-session WinHttpAutoProxySvc is
@@ -432,7 +432,7 @@ resource fslogixConfiguration 'Microsoft.Compute/virtualMachines/runCommands@202
           # registry when the API route is refused.
           #
           # Nothing here is allowed to fail the script. This runs AFTER the
-          # FSLogix configuration above for the same reason — an optional
+          # FSLogix configuration above for the same reason - an optional
           # prerequisite must never be able to stop the thing it is a
           # prerequisite for. The first version of this did exactly that: the
           # denial aborted the script before FSLogix was configured at all, and
@@ -488,7 +488,7 @@ resource fslogixConfiguration 'Microsoft.Compute/virtualMachines/runCommands@202
 
 // Time zone redirection, as its own Run Command rather than folded into the
 // FSLogix one. They are unrelated settings, and a managed Run Command is
-// independently re-runnable — which is lost if several jobs share one script.
+// independently re-runnable - which is lost if several jobs share one script.
 //
 // No restart: the policy is read when a session starts, not at boot.
 resource timeZoneRedirection 'Microsoft.Compute/virtualMachines/runCommands@2024-07-01' = [

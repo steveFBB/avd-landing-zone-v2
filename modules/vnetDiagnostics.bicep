@@ -1,6 +1,6 @@
 // Diagnostic settings for a VNet
 //
-// Called once per VNet — the hub and each spoke. Scoped to whichever
+// Called once per VNet - the hub and each spoke. Scoped to whichever
 // resource group the VNet lives in.
 //
 // categoryGroup 'allLogs' rather than naming individual categories: it

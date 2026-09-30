@@ -3,9 +3,9 @@
 // =============================================================================
 // Two separate things have to be true before a user can reach a desktop:
 //
-//   1. The desktop is published to them — the Desktop Virtualization User role
+//   1. The desktop is published to them - the Desktop Virtualization User role
 //      on the application group. That is done in avdApplicationGroup.bicep.
-//   2. They are allowed to log on to the VM itself — Virtual Machine User
+//   2. They are allowed to log on to the VM itself - Virtual Machine User
 //      Login, here.
 //
 // Miss the second and the desktop appears in the client, the connection is
@@ -37,7 +37,7 @@ resource usersLogin 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!
   }
 }
 
-// Admins get administrator login, which also grants user login — so they are
+// Admins get administrator login, which also grants user login - so they are
 // deliberately not given both.
 resource adminsLogin 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(avdAdminsGroupObjectId)) {
   name: guid(resourceGroup().id, avdAdminsGroupObjectId, virtualMachineAdminLoginRoleId)

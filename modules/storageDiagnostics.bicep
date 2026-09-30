@@ -2,9 +2,9 @@
 //
 // Two settings, because the useful data is at two levels:
 //
-//   account level — transaction metrics for the account as a whole. Logs
+//   account level - transaction metrics for the account as a whole. Logs
 //                   at this level are not meaningful for FSLogix.
-//   file service  — where FSLogix profile activity actually happens.
+//   file service  - where FSLogix profile activity actually happens.
 //                   StorageRead / StorageWrite / StorageDelete here are
 //                   what you need when a profile fails to mount.
 //
