@@ -1,40 +1,74 @@
 # AVD Landing Zone (v2)
 
-**Repository version: 0.3.** See [CHANGELOG.md](CHANGELOG.md)
-for what each version contains. Day-to-day iteration publishes over `dev`;
-numbered versions are cut only for milestones, and 1.0.0 is reserved for the
-first release fit for a customer.
+A reusable AVD landing zone, deployed from a portal wizard through an Azure
+Template Spec. Spokes, subnets and host pools are arrays and looped over — one
+VNet or five, same code.
 
-Loop-based rewrite of the AVD landing zone Bicep template. Where v1 had a fixed
-hub and three named spokes, this version takes spokes and subnets as arrays and
-loops over them — one spoke or five, same code.
+It follows Microsoft's own AVD landing zone accelerator on the three decisions
+that shape everything else: **it does not create a hub**, it treats an existing
+VNet as a first-class choice, and it defaults to a NAT gateway rather than a
+firewall for egress. See [Network](#network) for why.
 
-> **This template uses Microsoft Entra Kerberos with cloud-only identities,
-> which Microsoft currently documents as Preview.** Hybrid identities with
-> Entra Kerberos are generally available; cloud-only is not. Cloud-only is also
-> supported in Azure Public only — not US Gov, not China. That matters
-> commercially as much as technically, so raise it with a customer before
-> committing to this design.
+Every publish stamps a build number into the template spec, so you can always
+tell which code is in Azure:
 
-**Status: core infrastructure deployed and verified; session host and Entra
-automation pending full live validation.** The networking, storage, monitoring
-and control plane layers have been deployed end to end from the portal wizard
-with every guard clean. Session hosts, the Entra automation, Azure Firewall,
-Insights and the alerts have had `build`, `lint` and `what-if` only — and those
-are the riskier halves. See [Validation status](#validation-status).
+```powershell
+az ts show --name avd-landing-zone --version dev `
+  --resource-group rg-templatespecs --query description -o tsv
+```
 
-## Identity model: cloud-only
+Day-to-day iteration publishes over `dev`. Numbered versions are cut only for
+milestones, and 1.0.0 is reserved for the first release fit for a customer. See
+[CHANGELOG.md](CHANGELOG.md).
 
-This template targets **cloud-only identities**. FSLogix storage uses
-Microsoft Entra Kerberos, which for cloud-only users needs no domain
-controller for authentication or authorisation. There is therefore no DC
-subnet, no custom VNet DNS, and no on-premises connectivity in this design.
+**Status: in development, not customer-ready.** The cloud-only path has been
+deployed end to end and FSLogix profiles mount. The hybrid path, the
+existing-network path and several recent changes have never been deployed. See
+[Validation status](#validation-status).
 
-Two constraints follow from that choice:
+## Identity model
 
-- **Session hosts must be Entra-joined**, and must run Windows 11 24H2 or
-  later **at or above Microsoft's documented minimum cumulative update**. The
-  version alone is not enough:
+Chosen on the Identity tab, and almost everything else follows from it.
+
+| | `entraOnly` | `hybrid` |
+|---|---|---|
+| Session hosts | created, Entra joined | **not created** |
+| Access groups | created, or object IDs supplied | either |
+| Storage | AADKERB + `kdc_enable_cloud_group_sids` | AADKERB, no tag |
+| Share NTFS | set automatically via `Set-Acl` | manual, with `icacls` |
+| Sign-in rights | VM User / Administrator Login | Active Directory |
+
+**`hybrid` builds the landing zone without session hosts.** It is for a
+customer whose domain controller does not exist yet: networks, storage,
+monitoring, host pools, application groups, workspace and groups are all
+created, the pools are left empty, and the hosts are created later by whatever
+process handles that once a domain controller is in place. This template never
+creates session hosts under hybrid.
+
+Entra Kerberos is deferred under hybrid until you tick that the domain
+controller exists and Entra Connect is syncing. Until then the storage account
+is created without AADKERB and no admin consent is granted — both need
+identities that are already synced, so enabling them on a first pass would
+configure something that cannot work. `entraKerberosDeferred` reports it.
+
+The sequence for a hybrid customer:
+
+1. Deploy the landing zone.
+2. Build the domain controller and get Entra Connect syncing.
+3. Set the DNS servers on the Identity tab to those domain controllers.
+4. Redeploy with the domain controller box ticked.
+5. Create the session hosts and register them against the empty host pools.
+
+### Cloud-only constraints
+
+> **Microsoft Entra Kerberos with cloud-only identities is documented as
+> Preview**, and supported in Azure Public only — not US Gov, not China.
+> Hybrid identities with Entra Kerberos are generally available. That matters
+> commercially as much as technically, so raise it before committing.
+
+- **Session hosts must be Entra joined**, and must run Windows 11 24H2 or later
+  **at or above Microsoft's documented minimum cumulative update**. The version
+  alone is not enough:
 
   | Version | Minimum KB | Minimum build |
   |---|---|---|
@@ -45,37 +79,37 @@ Two constraints follow from that choice:
 
   A freshly deployed marketplace image does **not** necessarily meet this, and
   the template sets `enableAutomaticUpdates: false` with `patchMode: Manual`
-  deliberately — controlled image management, which assumes an image or patch
-  pipeline exists elsewhere. This template does not provide one. Check the
-  build on a new host before concluding that FSLogix is broken.
+  deliberately. Check the build on a new host before concluding FSLogix is
+  broken.
 - **MFA must be disabled on the storage account's Entra application.** Not on
   users — on the app registration Azure creates for the storage account. A
-  broad "require MFA for all apps" Conditional Access policy will break
-  authentication to the share.
+  broad "require MFA for all apps" policy breaks authentication to the share.
+- **Both `WinHttpAutoProxySvc` and `iphlpsvc` must be running.** The template
+  attempts this on each host, best effort: `Set-Service` on the first is
+  refused even as SYSTEM, so it falls back to the registry, and failure there
+  is logged rather than fatal.
 
-A storage account supports only one identity source, so every host pool in a
+A storage account supports one identity source, so every host pool in a
 deployment shares this model.
 
 ## What it deploys
 
-**Network**
+**Network** — only when `networkMode` is `create`
 
-- One hub VNet, always with a GatewaySubnet, plus optional FortiGate NIC
-  subnets and AzureBastionSubnet
-- Any number of spoke VNets, each in its own resource group
-- Any number of subnets, assigned to spokes by name
+- Any number of VNets, each in its own resource group, named as you type them
+- Any number of subnets, assigned to their VNet by key
 - An NSG per subnet — either a set of informational service-tag rules for AVD,
   or an empty attachment point
-- A route table per spoke when the hub has a firewall, with default and
-  RFC1918 routes pointing at it
-- An optional NAT gateway and public IP per spoke, for outbound internet
-  access where there is no firewall
-- Hub-to-spoke and spoke-to-hub peerings for spokes that opt in
+- A NAT gateway and public IP per VNet that asks for one
+- A route table per VNet when routing through an existing firewall
+- Peerings to an existing hub VNet, for VNets that opt in
+
+No hub is created. See [Network](#network).
 
 **Storage**
 
-- An FSLogix storage account and SMB share, with a private endpoint in the
-  AVD spoke and a privatelink DNS zone linked to the hub and every spoke
+- An FSLogix storage account and SMB share, with a private endpoint and a
+  privatelink DNS zone linked to every VNet that has to resolve the share
 - Microsoft Entra Kerberos enabled on the account, with admin consent granted
   and the cloud-group-SIDs tag applied to its Entra application
 - Azure RBAC on the share for the AVD user and admin groups
@@ -84,7 +118,7 @@ deployment shares this model.
 **Monitoring**
 
 - A Log Analytics workspace, with diagnostics from every VNet, the storage
-  account, the Azure Firewall and every AVD control plane resource
+  account and every AVD control plane resource
 - Azure Monitor Agent on each session host, with a data collection rule
   carrying Microsoft's AVD Insights counter and event set including both
   FSLogix channels
@@ -95,8 +129,9 @@ deployment shares this model.
 
 - Any number of pooled host pools, each with its own desktop application
   group, all surfaced through a single workspace
-- Session hosts per host pool, built from a gallery image, Entra-joined,
-  optionally enrolled in Intune, and registered with their host pool
+- Session hosts per host pool, built from a gallery image, Entra joined,
+  optionally enrolled in Intune, and registered with their host pool.
+  `entraOnly` only.
 - The Desktop Virtualization User role on each application group, and Virtual
   Machine User Login on the session hosts, so desktops are both visible and
   usable without a manual step
@@ -132,8 +167,12 @@ once per tenant:
 .\scripts\bootstrap-entra-identity.ps1 -Location northeurope
 ```
 
-It prints a resource ID. Paste that into the wizard's **Entra ID** tab, or set
-`entraManagedIdentityId` in the parameters file.
+**Nothing needs copying afterwards.** The template finds the identity by the
+name and resource group the script gives it — `id-avd-entra-ops` in
+`rg-identity` — so there is nothing to paste into the wizard. Override
+`entraManagedIdentityName` or `entraManagedIdentityRgName` in a parameters file
+on the rare occasion the script was run with `-IdentityName` or
+`-ResourceGroup`.
 
 What it grants, and why each one:
 
@@ -154,55 +193,104 @@ Administrator is not enough, which catches people out.
 Operator** on that identity, as well as their usual rights. Contributor or
 Owner on its resource group both include it.
 
-Leaving `entraManagedIdentityId` empty is supported. The rest of the template
-deploys normally, group object IDs are taken as parameters instead, and the
-Entra work becomes four manual steps. The `entraWorkSkippedNoIdentity` output
-says so.
+Not running it at all is supported: untick **Use the bootstrap managed
+identity**. The rest of the template deploys normally, group object IDs are
+taken as parameters instead, and the Entra work becomes four manual steps. The
+`entraWorkSkippedNoIdentity` output says so.
 
-## Outbound internet access
+## Network
 
-Azure is retiring default outbound access. VNets created with API versions
-released after **31 March 2026** default their subnets to private, with no
-implicit internet path. AVD session hosts need outbound access to reach the
-service, so every spoke needs an explicit path.
+This template **does not create a hub**, and that is deliberate rather than a
+gap. A hub carries the customer's gateway, their firewall and — in a hybrid
+environment — their domain controllers. It belongs to whoever runs their
+network, and in Microsoft's enterprise-scale model it lives in a connectivity
+subscription owned by the platform team. An AVD workload peers into it.
+Microsoft's own AVD accelerator works the same way: no hub, optional peering to
+one that exists.
 
-There are two, and a spoke needs one of them:
+Building one meant owning a design that was not ours, and it forced a series of
+special cases — the firewall choice deciding whether a hub existed, then the
+identity model overriding that to get somewhere to put a domain controller.
 
-- **A hub firewall.** When `hubFirewallType` is not `'none'`, each spoke gets
-  a route table sending `0.0.0.0/0` and the RFC1918 ranges to the firewall,
-  which provides egress. Nothing further is needed.
-- **A NAT gateway.** Set `natGateway: true` on the spoke, then
-  `useNatGateway: true` on the subnets that should use it.
+### Create or use existing VNets
 
-The two decisions are separate because the costs are. A NAT gateway cannot be
-attached to subnets in more than one VNet, so each spoke needing one pays for
-its own gateway and public IP. Attaching further subnets within that spoke is
-free beyond data processing.
+`networkMode` is the first question on the Network tab.
 
-Do not put a NAT gateway and a firewall route table on the same subnet — the
+**`create`** builds the VNets from the Spokes and Subnets tabs, as before.
+
+**`existing`** creates nothing network-shaped. You supply:
+
+| | |
+|---|---|
+| `existingSessionHostSubnetId` | Where the session hosts go |
+| `existingPrivateEndpointSubnetId` | Where the FSLogix private endpoint goes. May be the same subnet. Empty skips the private endpoint. |
+| `avdResourceGroupName` | Created, for the host pool, application group, workspace and session hosts |
+
+The privatelink DNS zone is linked to whichever VNets those subnets belong to,
+deduplicated — both are often in the same one, and two zone links with the same
+name fail the deployment.
+
+### Peering to an existing hub
+
+Set `peerToExistingHubVnetId` and every VNet with `peerToHub: true` is peered
+to it, in both directions.
+
+Both sides of a peering have to exist, and the hub side lives in the customer's
+own resource group. That is only reachable when the hub is in the same
+subscription — a subscription-scoped template cannot deploy into another. When
+it is elsewhere, only the spoke side is created and
+`hubSidePeeringNotCreated` says so. **Neither side carries traffic until their
+network team adds the matching peering.**
+
+### Outbound internet
+
+Azure is retiring default outbound access: VNets created with API versions
+after **31 March 2026** default their subnets to private. Session hosts reach
+the AVD service over the internet to register, so a host with no egress never
+comes up.
+
+`egressMode`:
+
+| | |
+|---|---|
+| `natGateway` | A NAT gateway per VNet that asks for one. The default. |
+| `firewall` | A default route to a firewall that **already exists**, by its private IP. Route tables are created and attached; the firewall is not. |
+| `none` | Neither. Correct only when the subnets are not private, or something outside this deployment provides egress. |
+
+**NAT gateway is Microsoft's recommendation for AVD.** Their wording: it
+"mitigates performance effects of routing AVD service traffic through
+firewalls", and a firewall is "not recommended as the primary egress method"
+for AVD. Session hosts talk to the service constantly, and an inspection device
+in that path costs you.
+
+A NAT gateway cannot be attached to subnets in more than one VNet, so each VNet
+needing one pays for its own gateway and public IP. Set `natGateway: true` on
+the VNet **and** `useNatGateway: true` on its subnets — a gateway with no
+subnet attached does nothing.
+
+Do not put a NAT gateway and a firewall route table on the same subnet. The
 user-defined route wins and the NAT gateway bills for nothing.
 
-`privateSubnets` (default `true`) sets `defaultOutboundAccess = false` so this
-behaviour is explicit rather than dependent on the template's API version.
-
-**A spoke with neither path still deploys successfully.** The failure appears
-later, as session hosts that never register. The `spokesWithoutOutbound`
-deployment output lists any spoke in that state.
+**A VNet with no egress path still deploys.** When it is the one carrying
+session hosts, they are skipped rather than built into a state where they can
+never register: `sessionHostsSkippedNoOutbound` says so.
+`spokesWithoutOutbound` lists every VNet in that state.
 
 ## Naming
 
-Names are derived from the spoke name rather than set individually. A spoke
-called `avd` with a subnet called `hosts` produces:
+Resource groups, VNets and subnets are named **exactly as you type them** on
+the Spokes and Subnets tabs. Leave a name blank and it falls back to the old
+derived pattern — `rg-<key>`, `vnet-<key>`, `snet-<key>-<name>` — so a
+parameters file written before those columns existed still produces the same
+resources.
 
-```
-rg-avd
-vnet-avd
-snet-avd-hosts
-nsg-avd-hosts
-rt-avd              (only when the hub has a firewall)
-```
+The `name` column on each grid is a **key**, not a name: subnets reference their
+parent VNet by it. Nothing is named from it unless you leave a name blank.
 
-The hub is the exception — `hubRgName` and `hubVnetName` are set explicitly.
+Still derived, because they have no grid row of their own: NSGs
+(`nsg-<subnet name>`), route tables (`rt-<key>`), NAT gateways (`nat-<key>`),
+host pools (`hp-<name>`), application groups (`ag-<name>-desktop`), the Log
+Analytics workspace and the data collection rule.
 
 Session host names come from the host pool name, lowercased, hyphens stripped
 and truncated to 11 characters, with an index appended: host pool `desktops`
@@ -218,11 +306,10 @@ main.bicep                      subscription-scoped entry point
 parameters.example.bicepparam   copy per customer
 uiFormDefinition.json           the portal wizard
 modules/
-  hub.bicep                     hub VNet and its optional subnets
-  spoke.bicep                   one spoke VNet and its subnets
-  peering.bicep                 one peering, used twice per spoke
+  spoke.bicep                   one VNet and its subnets
+  peering.bicep                 one peering, used twice per peered VNet
   nsg.bicep                     AVD or empty NSG
-  routeTable.bicep              forced routing through the hub firewall
+  routeTable.bicep              default route to an existing firewall
   natGateway.bicep              NAT gateway and its public IP
   storage.bicep                 FSLogix account, share, Entra Kerberos
   storageRbac.bicep             share-level role assignments
@@ -249,23 +336,31 @@ Two arrays. Spokes:
 
 ```bicep
 param spokes = [
-  { name: 'avd',  addressPrefix: '10.3.0.0/16', role: 'avd',  peerToHub: true, natGateway: true }
-  { name: 'prod', addressPrefix: '10.1.0.0/16', role: 'none', peerToHub: true, natGateway: false }
+  { name: 'avd',  rgName: 'rg-avd',  vnetName: 'vnet-avd',  addressPrefix: '10.3.0.0/16', role: 'avd',  peerToHub: true, natGateway: true }
+  { name: 'prod', rgName: 'rg-prod', vnetName: 'vnet-prod', addressPrefix: '10.1.0.0/16', role: 'none', peerToHub: true, natGateway: false }
 ]
 ```
 
-`role: 'avd'` marks the spoke that will host session hosts and the storage
+`name` is the key subnets are matched on. `rgName` and `vnetName` are the real
+resource names; leave them out and they fall back to `rg-<name>` and
+`vnet-<name>`.
+
+`role: 'avd'` marks the VNet that will host session hosts and the storage
 private endpoint; its subnets get private endpoint network policies disabled.
-Exactly one spoke should have it.
+Exactly one should have it. Ignored when `networkMode` is `existing`, where the
+subnets are named directly.
 
 Subnets reference their spoke by name:
 
 ```bicep
 param subnets = [
-  { spoke: 'avd',  name: 'hosts',   prefix: '10.3.0.0/24', nsgType: 'avd',   useNatGateway: true,  hostsPrivateEndpoints: true }
-  { spoke: 'prod', name: 'servers', prefix: '10.1.0.0/24', nsgType: 'empty', useNatGateway: false, hostsPrivateEndpoints: false }
+  { spoke: 'avd',  name: 'snet-desktops', prefix: '10.3.0.0/24', nsgType: 'avd',   useNatGateway: true,  hostsPrivateEndpoints: true }
+  { spoke: 'prod', name: 'snet-servers',  prefix: '10.1.0.0/24', nsgType: 'empty', useNatGateway: false, hostsPrivateEndpoints: false }
 ]
 ```
+
+Here `name` **is** the subnet's name, used as typed. Its NSG is called
+`nsg-<that name>`.
 
 Both arrays are flat — every field is a string, number or boolean — so the
 portal form can collect them in a grid without nesting.
@@ -276,58 +371,21 @@ session hosts need, so a subnet carrying it is by definition the session host
 subnet. If there is no such subnet they are skipped, and
 `sessionHostsSkippedNoSubnet` says so.
 
-## The firewall switch
+## Firewalls
 
-`hubFirewallType` drives three things at once, so they cannot drift apart:
+This template does not deploy a firewall, and no longer builds FortiGate or
+Azure Firewall subnets. Set `egressMode` to `firewall` and give
+`firewallPrivateIp`, and each created VNet gets a route table sending
+`0.0.0.0/0` and the RFC1918 ranges to it.
 
-| | `'none'` | `'fortigate'` | `'azureFirewall'` |
-|---|---|---|---|
-| Hub subnets | none | four FortiGate NIC subnets | `AzureFirewallSubnet`, plus `AzureFirewallManagementSubnet` on Basic |
-| The appliance | — | yours to deploy | deployed, with an AVD egress policy |
-| Firewall IP for routes | — | `hubFirewallInternalIp`, by hand | read from the resource |
-| Spoke route tables | not created | one per spoke, default + RFC1918 via the firewall | same |
-| Peering forwarded traffic | disabled | enabled in both directions | enabled in both directions |
+If a customer needs a firewall built, that is a platform deployment rather than
+part of an AVD landing zone — it belongs with their hub, and with whoever owns
+it.
 
-The last row matters: without forwarded traffic allowed on both sides of a
-peering, spoke-to-spoke traffic forwarded by the firewall is dropped at the
-peering rather than reaching its destination.
-
-`hubFirewallInternalIp` is required for `'fortigate'` only. With Azure Firewall
-the private IP is an output of the resource, so there is nothing to transcribe
-and nothing to get wrong.
-
-### Azure Firewall
-
-The policy carries Microsoft's documented AVD egress rules, so session hosts
-work through it without further configuration: the `WindowsVirtualDesktop` FQDN
-tag, service tags for the control plane and platform, RDP Shortpath STUN on UDP
-3478, Windows activation on 1688, the Entra join and sign-in endpoints, the
-certificate endpoints, and the Azure Monitor Agent control endpoints.
-
-Three of those are worth knowing about, because each one fails quietly if
-omitted:
-
-- **Six certificate endpoints are HTTP on port 80**, not HTTPS. An HTTPS-only
-  rule set breaks attestation certificate provisioning.
-- **`pas.windows.net` is not in the AVD required-URL list** and is not reliably
-  covered by the `AzureActiveDirectory` service tag. Without it the host joins
-  Entra ID and then nobody can sign in to it.
-- **Windows activation uses a service tag, not a hostname.** FQDN filtering in
-  a network rule needs DNS proxy and is unavailable on Basic, and port 1688
-  cannot go in an application rule at all since those are HTTP and HTTPS only.
-
-Ordering is handled: the firewall depends on its rule collection group, and the
-spoke route tables depend on the firewall. Session hosts Entra join at first
-boot, and a default route pointing at a firewall with no rules yet would fail
-that join silently.
-
-**The Basic tier is not a cheaper Standard.** It requires a management NIC in
-its own `AzureFirewallManagementSubnet` with a second public IP — unconditional,
-not a forced-tunnelling option — and it tops out at 250 Mbps, which is a real
-ceiling for a pooled estate. Standard is the default for good reason.
-
-Stopping and starting a firewall can change its private IP. If you deallocate
-one to save money, redeploy afterwards so the spoke routes are refreshed.
+Note that peerings to an existing hub are created with `allowForwardedTraffic`
+on both sides. Without it, traffic the hub's firewall forwards between spokes
+is dropped at the peering rather than reaching its destination, and the symptom
+is a route that silently fails rather than an error.
 
 ## Session hosts
 
@@ -544,22 +602,32 @@ storage account and container instance that are cleaned up afterwards.
 
 ## Validation status
 
-All files compile and lint clean with Bicep CLI 0.47.16. The example parameters
-validate with `bicep build-params`.
+All files compile and lint clean with Bicep CLI 0.47.16. The example
+parameters validate with `bicep build-params`.
 
-**Deployed and verified against a live tenant:** hub, spokes, subnets, NSGs,
-NAT gateway, peerings, storage account with private endpoint and DNS, Log
-Analytics with diagnostics, host pool, application group and workspace. All
-guard outputs returned clean.
+**Deployed and verified against a live tenant:** VNets, subnets, NSGs, NAT
+gateway, storage account with private endpoint and DNS, Log Analytics with
+diagnostics, host pool, application group and workspace, session hosts with
+Entra join and registration, the Entra automation, alerts, and FSLogix profile
+containers mounting over Entra Kerberos.
 
-**Not yet exercised against a live tenant:** session hosts, the Entra bootstrap
-and group creation, the Entra Kerberos consent and tagging script, and the NTFS
-Run Command. Also untested: the FortiGate hub path, the Bastion subnet, and
-more than one host pool.
+**Never deployed:**
+
+- the `hybrid` identity model
+- `networkMode: existing`
+- peering to an existing hub
+- `egressMode: firewall`
+- more than one host pool
+
+**Known not working:** ten performance counters are in the deployed data
+collection rule, pass `Get-Counter` on a host, and never reach the workspace —
+the LogicalDisk queue lengths, all four Memory counters and all four
+PhysicalDisk counters. AVD Insights wants them and therefore reports the hosts
+as unconfigured. Cause unknown.
 
 `what-if` and `build` catch template errors. They do not catch quota, image
 availability, tenant policy, or anything a deployment script does at runtime —
-and note that `what-if` cannot evaluate deployment scripts at all.
+and `what-if` cannot evaluate deployment scripts at all.
 
 ### Known runtime risks
 
@@ -658,7 +726,6 @@ Keep the identity and template spec resource groups; everything else goes:
 
 ```
 az group delete --name rg-avd --yes --no-wait
-az group delete --name rg-hub --yes --no-wait
 az group delete --name rg-storage --yes --no-wait
 az group delete --name rg-mgmt --yes --no-wait
 ```
@@ -675,7 +742,7 @@ so read them on the deployment's Outputs blade once it finishes.
 
 | Output | Meaning |
 |---|---|
-| `spokesWithoutOutbound` | Spokes with no NAT gateway and no firewall route. Their VMs have no internet. |
+| `spokesWithoutOutbound` | VNets with no NAT gateway and no firewall route. Their VMs have no internet. |
 | `storageHasNoPrivateEndpoint` | Storage deployed but no subnet was flagged `hostsPrivateEndpoints`, so the share is reachable only over its public endpoint. |
 | `resourceGroupNameCollisions` | A spoke named `storage` or `mgmt` produces the same resource group name as the shared storage or monitoring group. |
 | `hostPoolsSkippedNoAvdSpoke` | Host pools were defined but no spoke has `role: 'avd'`, so the control plane was skipped entirely. |
@@ -683,15 +750,17 @@ so read them on the deployment's Outputs blade once it finishes.
 | `duplicateSessionHostPrefixes` | Two host pools produce the same VM name prefix. Set `vmNamePrefix` on one. |
 | `entraWorkSkippedNoIdentity` | Entra work was requested but no managed identity was supplied, so groups, consent and the manifest tag were all skipped. |
 | `fslogixNtfsPermissionsSkipped` | NTFS permissions could not be set — no session host to run from, or no users group. Until they are, every user can read every other user's profile. |
-| `bastionPrefixValid` | `false` when `bastionSubnetPrefix` is smaller than `/26`, which Azure rejects. |
-| `azureFirewallPrefixValid` | `false` when `AzureFirewallSubnet` is smaller than `/26`. |
-| `azureFirewallMgmtPrefixValid` | `false` when `AzureFirewallManagementSubnet` is smaller than `/26`. Basic tier only. |
+| `sessionHostsSkippedNoOutbound` | The VNet carrying session hosts has no NAT gateway and no firewall route, so they were not created. They could never have registered. |
+| `subnetsWithUnknownSpoke` | A subnet's parent VNet key matches no row on the Spokes tab. The deployment fails partway through without this. |
+| `hubSidePeeringNotCreated` | A hub VNet was given but it is in another subscription, so only the spoke side of each peering exists. Neither side carries traffic until their network team adds the other. |
+| `entraKerberosDeferred` | Hybrid, and the domain controller is not in place yet, so the storage account has no AADKERB and no consent was granted. The intended first-pass state. |
+| `hybridSessionHostsSkipped` | Hybrid, so no session hosts were created. By design. |
 | `alertsHaveNoRecipient` | Alerts deployed with no email address. They fire, nobody is told. |
 | `insightsSkippedNoWorkspace` | Insights requested but monitoring is off, so the agent was not installed. |
 | `storageHardeningRequired` | Storage is still in its bootstrap posture — shared key access on, or the public endpoint open. |
 
-Everything should be empty or false except the three `...Valid` outputs, which
-should be true.
+Everything should be empty or false, apart from the two that report a
+deliberate hybrid state.
 
 **These are deployment outputs, not what-if output.** What-if reports resource
 changes only; outputs are evaluated during a real deployment. They save
@@ -705,19 +774,22 @@ were created.
 ## Portal wizard
 
 `uiFormDefinition.json` is what gives the template its Create blade, and it is
-the intended way in. The eight tabs collect the same values the parameters file
-holds, with validation, dropdowns and grids instead of hand-edited arrays.
+the intended way in. The tabs collect the same values the parameters file holds,
+with validation, dropdowns and grids instead of hand-edited arrays.
 
 | Tab | What it collects |
 |---|---|
 | Basics | Subscription, region and tags |
-| Hub | Hub network, firewall choice and tier, optional Bastion subnet |
-| Spokes | A grid — one row per spoke |
-| Subnets | A grid — one row per subnet, matched to a spoke by name |
+| Identity | Entra only or hybrid, the bootstrap identity, groups, Kerberos, NTFS |
+| Network | Create or use existing VNets, peering to an existing hub, outbound internet |
+| Spokes | A grid — one row per VNet. Hidden when using existing VNets. |
+| Subnets | A grid — one row per subnet. Hidden when using existing VNets. |
 | Storage | FSLogix account and private endpoint, or off |
 | Monitoring | Log Analytics, AVD Insights, alerts and the notification email |
 | AVD | Host pools, desktop names, workspace, session host image, size, local admin, time zone, FSLogix |
-| Entra ID | The managed identity, group creation, Kerberos setup, NTFS |
+
+Identity comes second because most of the rest follows from it: under hybrid
+the session host section disappears entirely.
 
 Adding a row to the Spokes grid adds a resource group, VNet, peerings and
 optionally a NAT gateway. Adding a row to Host pools adds a host pool,
@@ -741,29 +813,30 @@ parameters file directly.
 
 ## Known limitations
 
-- Greenfield only. Creates its own resource groups and VNets; does not consume
-  existing hub, DNS or Log Analytics infrastructure.
-- Cloud-only identities only. Hybrid environments needing AD DS Kerberos, a
-  domain controller, custom VNet DNS or on-premises connectivity are not
-  supported by this design.
+- Does not create a hub, or consume an existing Log Analytics workspace or
+  private DNS zone. `networkMode: existing` covers an existing network; the
+  rest is still created.
+- Under `hybrid`, session hosts are never created and NTFS permissions on the
+  share are never set. Both are left to whatever process runs once a domain
+  controller exists.
 - The Entra work needs a bootstrap identity with tenant-wide Graph
   permissions. There is no way round this from a portal Create blade — the
   Microsoft Graph Bicep extension does not work in one, and Microsoft has an
   open issue with no committed date.
 - Excluding the storage application from MFA Conditional Access is always
   manual.
-- FortiGate is subnets only — the appliance, its licensing and its HA pairing
-  are yours. Azure Firewall is the path the template deploys end to end.
+- No firewall is deployed. `egressMode: firewall` routes to one that already
+  exists; building one is a platform deployment, not part of an AVD landing
+  zone.
 - The AVD NSG rules are **informational service-tag rules, not a complete AVD
   allowlist**. They do not contain everything Microsoft currently documents —
   UDP 3478 and several platform endpoints are absent — and they restrict
   nothing, because Azure's default `AllowInternetOutBound` still applies.
-  Real egress control means a firewall, which is what the Azure Firewall path
-  is for.
+  Real egress control means a firewall, which this template routes to but does
+  not deploy.
 - Empty NSGs are attachment points, not segmentation.
-- The Bastion `/26` minimum is surfaced as the `bastionPrefixValid` output
-  rather than failing the deployment.
-- A spoke with no outbound path deploys successfully and fails at runtime.
+- A VNet with no outbound path deploys successfully. Session hosts in it are
+  skipped rather than built broken, but other VMs there will have no egress.
 - NAT gateways are deployed as regional, not zonal.
 - Session hosts are not zone-distributed and have no availability set. For a
   pooled deployment that matters less than it would for single-session, but it
