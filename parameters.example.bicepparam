@@ -31,72 +31,41 @@ param tags = {
 }
 
 // -----------------------------------------------------------------------------
-// HUB
+// NETWORK
 // -----------------------------------------------------------------------------
 
-param hubRgName = 'rg-hub'
-param hubVnetName = 'vnet-hub'
-param hubAddressPrefix = '10.0.0.0/16'
-
-// GatewaySubnet — name is fixed by Azure, do not rename.
-param gatewaySubnetPrefix = '10.0.0.0/24'
-
-// Hub firewall. Drives the hub subnets, the spoke route tables and whether
-// peerings allow forwarded traffic — all three from one switch, so they
-// cannot drift apart.
+// 'create'   builds the VNets from the spokes and subnets below.
+// 'existing' uses VNets that already exist: point at the subnets instead and
+//            nothing network-shaped is created.
 //
-//   'none'          no firewall. Spokes need a NAT gateway for outbound.
-//   'azureFirewall' deploys the firewall, a policy with the documented AVD
-//                   egress rules, and its public IP. The private IP is read
-//                   from the resource, so hubFirewallInternalIp is not used.
-//   'fortigate'     creates the four FortiGate NIC subnets only. The appliance
-//                   is yours to deploy, which is why hubFirewallInternalIp is
-//                   then required — the template cannot know it.
-param hubFirewallType = 'none'
+// This template never creates a hub. A hub carries the customer's gateway,
+// firewall and domain controllers and belongs to whoever runs their network;
+// an AVD workload peers into it.
+param networkMode = 'create'
 
-// --- Azure Firewall ----------------------------------------------------------
-// Only used when hubFirewallType = 'azureFirewall'.
+// Only used when networkMode = 'existing'.
+param existingSessionHostSubnetId = ''
+param existingPrivateEndpointSubnetId = ''
+param avdResourceGroupName = ''
+
+// Only used when networkMode = 'create'. Every spoke with peerToHub = true is
+// peered to this VNet. The hub side of the peering is created only when the hub
+// is in this same subscription; otherwise the customer's network team adds it.
+param peerToExistingHubVnetId = ''
+
+// How VMs reach the internet.
+//   'natGateway' a NAT gateway per spoke that asks for one. Microsoft's
+//                recommendation for AVD: predictable outbound addresses with no
+//                inspection device in the path of the service traffic.
+//   'firewall'   a default route to a firewall that already exists.
+//   'none'       neither.
 //
-// Basic is not simply a cheaper Standard. It requires a management NIC in its
-// own subnet with a second public IP, it cannot filter by hostname in network
-// rules, and it tops out at 250 Mbps — a real ceiling for a pooled AVD estate.
-param azureFirewallTier = 'Standard'
+// Session hosts reach the AVD service over the internet to register, so a host
+// with no egress never comes up.
+param egressMode = 'natGateway'
 
-// Name is fixed by Azure. /26 or larger; a /26 is enough at any scale, because
-// the firewall scales by adding instances inside it.
-param azureFirewallSubnetPrefix = ''
-
-// Basic tier only. Must not overlap AzureFirewallSubnet.
-param azureFirewallManagementSubnetPrefix = ''
-
-// Empty deploys the firewall regional. Spreading it across zones costs nothing
-// beyond inter-zone data charges.
-param azureFirewallZones = []
-
-// Required when hubFirewallType is not 'none'. Must sit inside
-// fgtInternalPrefix, at .68 or higher (Azure reserves the first three
-// usable addresses in every subnet).
-param hubFirewallInternalIp = ''
-
-// FortiGate NIC subnets — only used when hubFirewallType = 'fortigate'.
-param fgtExternalPrefix = ''
-param fgtInternalPrefix = ''
-param fgtHaPrefix = ''
-param fgtMgmtPrefix = ''
-
-// Example values for a FortiGate hub:
-//   param hubFirewallType       = 'fortigate'
-//   param hubFirewallInternalIp = '10.0.32.68'
-//   param fgtExternalPrefix     = '10.0.32.0/26'
-//   param fgtInternalPrefix     = '10.0.32.64/26'
-//   param fgtHaPrefix           = '10.0.32.128/29'
-//   param fgtMgmtPrefix         = '10.0.32.160/27'
-
-// AzureBastionSubnet. Name is fixed by Azure and the prefix must be /26 or
-// larger — /27 and smaller are rejected. Creates the subnet only; no
-// Bastion host is deployed by this template.
-param deployBastionSubnet = false
-param bastionSubnetPrefix = ''
+// Required when egressMode = 'firewall'.
+param firewallPrivateIp = ''
 
 // -----------------------------------------------------------------------------
 // SPOKES
@@ -162,7 +131,7 @@ param spokes = [
 param subnets = [
   {
     spoke: 'avd'
-    name: 'hosts'
+    name: 'snet-desktops'
     prefix: '10.3.0.0/24'
     nsgType: 'avd'
     useNatGateway: true
@@ -170,7 +139,7 @@ param subnets = [
   }
   {
     spoke: 'prod'
-    name: 'servers'
+    name: 'snet-servers'
     prefix: '10.1.0.0/24'
     nsgType: 'empty'
     useNatGateway: false
@@ -277,6 +246,12 @@ param setFslogixNtfsPermissions = true
 //
 // Set useEntraManagedIdentity to false to skip all Entra work and supply the
 // group object IDs by hand instead.
+
+// Hybrid only. Leave false on the first deployment: the Entra Kerberos setup
+// is deferred until the domain controller exists in the hub and Entra Connect
+// is syncing, because both halves need identities that are already synced.
+// Build the domain controller, get sync running, then redeploy with this true.
+param hybridDomainControllerReady = false
 
 param useEntraManagedIdentity = true
 param entraManagedIdentityName = 'id-avd-entra-ops'

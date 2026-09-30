@@ -21,6 +21,12 @@
     The Template Spec itself lives in an ordinary resource group. It has no
     connection to the resource groups the template later creates.
 
+.NOTES
+    Every publish increments a build number, stamps it into the template spec's
+    version description with a UTC timestamp and the git commit, and writes it to
+    BUILD at the repository root. The version itself stays 'dev'; the build number
+    is what tells you which code is actually in Azure.
+
 .EXAMPLE
     .\publish-templatespec.ps1 -Location northeurope
 
@@ -39,7 +45,9 @@ param(
 
     [string]$Version = 'dev',
 
-    [string]$DisplayName = 'AVD Landing Zone'
+    [string]$DisplayName = 'AVD Landing Zone',
+
+    [int]$BuildNumber = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,6 +61,46 @@ foreach ($f in @($mainBicep, $uiForm)) {
     if (-not (Test-Path $f)) {
         throw "Not found: $f. Run this from the repository, with main.bicep and uiFormDefinition.json at the root."
     }
+}
+
+# --------------------------------------------------------------------------
+# Build number
+# --------------------------------------------------------------------------
+# Every publish overwrites the same 'dev' version, so nothing in Azure says
+# which build you are looking at. This increments a counter, stamps it into the
+# version description, and writes it to BUILD at the repository root.
+#
+# The file is committed, so the number keeps going up across machines and
+# matches what is in Azure. Pass -BuildNumber to set it explicitly.
+$buildFile = Join-Path $repoRoot 'BUILD'
+
+if ($BuildNumber -gt 0) {
+    $build = $BuildNumber
+} elseif (Test-Path $buildFile) {
+    $previous = 0
+    if (-not [int]::TryParse((Get-Content $buildFile -Raw).Trim(), [ref]$previous)) {
+        throw "BUILD does not contain a number. Fix it, or pass -BuildNumber."
+    }
+    $build = $previous + 1
+} else {
+    $build = 1
+}
+
+$stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')
+$description = "build $build - published $stamp UTC"
+
+# Include the commit when this is a git working copy, so a build number can be
+# traced back to source. Silently skipped when git is absent or this is not a repo.
+$commit = ''
+try {
+    $commit = (git -C $repoRoot rev-parse --short HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0) { $commit = '' }
+} catch { $commit = '' }
+
+if ($commit) {
+    $dirty = (git -C $repoRoot status --porcelain 2>$null)
+    $suffix = if ($dirty) { ' (uncommitted changes)' } else { '' }
+    $description = "$description - commit $commit$suffix"
 }
 
 Write-Host "Subscription:" -NoNewline
@@ -73,8 +121,13 @@ az ts create `
     --display-name $DisplayName `
     --template-file $mainBicep `
     --ui-form-definition $uiForm `
+    --version-description $description `
     --yes `
     --output none
+
+# Written only after the publish succeeds, so a failed run does not burn a
+# number and leave the file ahead of what is actually in Azure.
+Set-Content -Path $buildFile -Value $build -NoNewline
 
 $specId = az ts show `
     --name $TemplateSpecName `
@@ -83,8 +136,11 @@ $specId = az ts show `
     --query id `
     --output tsv
 
-Write-Host "`nPublished."
+Write-Host "`nPublished build $build." -ForegroundColor Green
+Write-Host "  $description"
 Write-Host "Template spec version ID:"
 Write-Host "  $specId"
 Write-Host "`nTo use it: Azure portal -> search 'Template specs' -> $TemplateSpecName -> Deploy."
 Write-Host "The portal renders the wizard from uiFormDefinition.json rather than a plain parameter list."
+Write-Host "`nThe build number shows on the template spec's Versions blade, and with:"
+Write-Host "  az ts show --name $TemplateSpecName --version $Version --resource-group $TemplateSpecResourceGroup --query description -o tsv"

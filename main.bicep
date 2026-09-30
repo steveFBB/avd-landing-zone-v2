@@ -60,68 +60,67 @@ param enableTimeZoneRedirection bool = false
 param location string
 
 //
-// HUB
+// NETWORK
 //
-// The hub exists to hold a firewall. Selecting no firewall means none of this
-// is created — no hub resource group, no hub VNet, no route tables and no
-// peerings — so these carry defaults rather than being required.
-//
-param hubRgName string = 'rg-hub'
-param hubVnetName string = 'vnet-hub'
-param hubAddressPrefix string = '10.0.0.0/16'
-param gatewaySubnetPrefix string = '10.0.0.0/27'
+@description('''Where the VNets come from.
 
-@description('''Hub firewall. Drives three things at once so they cannot drift apart:
-the hub subnets, the spoke route tables, and whether peerings allow forwarded traffic.
+  create    This deployment creates them, from the Spokes and Subnets tabs.
+  existing  They already exist. You point at the subnets the session hosts and the
+            FSLogix private endpoint should use, and nothing network-shaped is created.
 
-  none           no firewall. Spokes need a NAT gateway for outbound internet.
-  fortigate      four FortiGate NIC subnets for an appliance you deploy yourself.
-                 hubFirewallInternalIp is then required, because the template has no
-                 way to know it.
-  azureFirewall  deploys the firewall, a policy carrying the documented AVD egress
-                 rules, and its public IP. The private IP is read from the resource, so
-                 hubFirewallInternalIp is not used.''')
+Microsoft's own AVD accelerator treats both as first class, and for a customer who
+already has Azure the second is the normal case: the network belongs to their platform
+team, not to an AVD workload. This template never creates a hub for the same reason —
+a hub carries the customer's gateway, firewall and domain controllers, and an AVD
+workload peers into it.''')
 @allowed([
+  'create'
+  'existing'
+])
+param networkMode string = 'create'
+
+@description('Existing subnet for the session hosts, as a full resource ID. Required when networkMode is existing.')
+param existingSessionHostSubnetId string = ''
+
+@description('''Existing subnet for the FSLogix private endpoint, as a full resource ID.
+May be the same subnet as the session hosts. Empty skips the private endpoint, and the
+share is then reached over its public endpoint.''')
+param existingPrivateEndpointSubnetId string = ''
+
+@description('''Resource group for the AVD resources — host pool, application group,
+workspace and session hosts. Required when networkMode is existing. Ignored when
+creating, where they go in the AVD spoke's own resource group.''')
+param avdResourceGroupName string = ''
+
+@description('''Existing hub VNet to peer the created VNets to, as a full resource ID.
+Empty creates no peerings.
+
+Both sides of a peering have to exist. The hub side can only be created when the hub is
+in this same subscription; otherwise their network team adds it and
+hubSidePeeringNotCreated says so.''')
+param peerToExistingHubVnetId string = ''
+
+@description('''How VMs in the created VNets reach the internet.
+
+  natGateway  A NAT gateway per VNet that asks for one, on the Spokes tab. Microsoft's
+              recommendation for AVD: predictable outbound addresses without putting the
+              AVD service traffic through an inspection device.
+  firewall    A default route to a firewall that ALREADY EXISTS, by its private IP.
+              Route tables are created and attached; the firewall is not.
+  none        Neither. Correct only when the subnets are not private, or when something
+              outside this deployment provides egress.
+
+Session hosts reach the AVD service over the internet to register, so a host with no
+egress never comes up.''')
+@allowed([
+  'natGateway'
+  'firewall'
   'none'
-  'fortigate'
-  'azureFirewall'
 ])
-param hubFirewallType string
+param egressMode string = 'natGateway'
 
-@description('Internal IP of the hub firewall NVA. Required when hubFirewallType is not \'none\'. Must sit inside fgtInternalPrefix.')
-param hubFirewallInternalIp string = ''
-
-param fgtExternalPrefix string = ''
-param fgtInternalPrefix string = ''
-param fgtHaPrefix string = ''
-param fgtMgmtPrefix string = ''
-
-@description('''Azure Firewall tier.
-
-Basic is not simply a cheaper Standard: it needs a management subnet and a second public
-IP, it cannot filter by FQDN in network rules, and it tops out at 250 Mbps — a real
-ceiling for a pooled AVD estate. Offered, but Standard is the sensible default.''')
-@allowed([
-  'Basic'
-  'Standard'
-  'Premium'
-])
-param azureFirewallTier string = 'Standard'
-
-@description('Prefix for AzureFirewallSubnet. Name fixed by Azure, /26 or larger. Required when hubFirewallType is azureFirewall.')
-param azureFirewallSubnetPrefix string = ''
-
-@description('Prefix for AzureFirewallManagementSubnet, /26 or larger. Required only on the Basic tier, where the management NIC is mandatory.')
-param azureFirewallManagementSubnetPrefix string = ''
-
-@description('Availability zones for the firewall. Empty deploys it regional.')
-param azureFirewallZones array = []
-
-@description('Create AzureBastionSubnet in the hub. Subnet only — no Bastion host is deployed.')
-param deployBastionSubnet bool = false
-
-@description('Prefix for AzureBastionSubnet. Azure requires /26 or larger.')
-param bastionSubnetPrefix string = ''
+@description('Private IP of the existing firewall to route through. Required when egressMode is firewall.')
+param firewallPrivateIp string = ''
 
 //
 // SPOKES
@@ -132,7 +131,8 @@ Each entry: {
   addressPrefix string  e.g. '10.3.0.0/16'
   role          string  'avd' (hosts session hosts and the storage private
                         endpoint) or 'none'
-  peerToHub     bool    create hub<->spoke peerings in both directions
+  peerToHub     bool    create hub<->spoke peerings in both directions. Absent or
+                        false under standalone topology, where there is no hub.
   natGateway    bool    create a NAT gateway + public IP in this spoke.
                         Costs money per spoke — a NAT gateway cannot be
                         shared across VNets. Which subnets actually use it
@@ -141,9 +141,9 @@ Each entry: {
                           Blank derives rg-<name>.
   vnetName                Optional. VNet name, exactly as you want it. Blank
                           derives vnet-<name>.
-  dnsServers              Optional. Comma or semicolon separated DNS server IPs.
-                          Blank uses Azure-provided DNS. A hybrid deployment must
-                          set this to the domain controllers.
+  dnsServers              Optional. Overrides the template-wide dnsServers for this
+                          spoke only. Not on the wizard — set it in a parameters file
+                          if one VNet needs different resolvers from the rest.
 }
 
 'name' is a key, not a resource name: subnets reference their parent spoke by it and
@@ -153,7 +153,8 @@ param spokes array
 @description('''Subnets, matched to their parent spoke by the `spoke` field.
 Each entry: {
   spoke                 string  must match a spokes[].name
-  name                  string  key only, used to group subnets under a spoke
+  name                  string  the subnet's name, exactly as you want it. The NSG
+                                for it is named nsg-<name>.
   prefix                string  e.g. '10.3.0.0/24'
   nsgType               string  'avd' (documented AVD outbound allow rules)
                                 or 'empty'
@@ -163,13 +164,9 @@ Each entry: {
                                 this subnet gets private endpoint network
                                 policies disabled. Exactly one subnet in the
                                 AVD spoke should have this set.
-  subnetName:             Optional. The subnet's real name, exactly as you want it.
-                          Blank derives snet-<spoke>-<name>, which is what earlier
-                          versions of this template always did.
 }
 
-'name' is the key the Subnets and Spokes grids are joined on, and it must match a
-spoke's 'name'. 'subnetName' is what the subnet is actually called in Azure.''')
+'spoke' joins a subnet to its parent VNet and must match a spokes[].name exactly.''')
 param subnets array
 
 @description('''Set spoke subnets private (defaultOutboundAccess = false), removing
@@ -251,13 +248,46 @@ param setFslogixNtfsPermissions bool = true
              process you use for that. Host pool rows are still honoured — the pools,
              application groups and workspace are created and left empty.
 
-Hybrid also expects the access groups to exist in Active Directory already and be
-synced, so their object IDs are supplied rather than created.''')
+Access groups can be created by the deployment under either model, or their object IDs
+supplied. Under hybrid, a group created here is cloud-only: fine for Azure RBAC, but it
+cannot be managed from on-premises AD, and a synced AD group is the safer choice once
+file-level NTFS permissions on the profile share come into play.''')
 @allowed([
   'entraOnly'
   'hybrid'
 ])
 param identityModel string = 'entraOnly'
+
+@description('''Hybrid only. Tick once the domain controller exists in the hub and Entra
+Connect is syncing users and groups.
+
+Until then the Entra Kerberos setup is deferred: the storage account is created without
+AADKERB and the admin consent script does not run. Both need users already synced from
+Active Directory, and on a first pass there is no domain controller and no sync, so
+enabling them would configure something that cannot work and would fail or sit broken
+until someone noticed.
+
+Deploy the landing zone with this unticked, build the domain controller, get Entra
+Connect running, then redeploy with it ticked. Ignored when identityModel is
+entraOnly, where there is nothing to wait for.''')
+param hybridDomainControllerReady bool = false
+
+@description('''DNS servers for every VNet this template creates, comma or semicolon
+separated. Empty uses Azure-provided DNS.
+
+Azure-provided DNS is correct for a cloud-only deployment: it resolves privatelink zones
+linked to the VNet, so the FSLogix private endpoint works with no DNS servers of your own.
+
+A hybrid deployment sets this to its domain controllers, but only once they exist. On a
+first pass they do not, so pointing the VNets at them breaks resolution for everything,
+the storage private endpoint included.
+
+Setting this makes those servers responsible for ALL resolution from the VNet,
+privatelink included — they must forward to 168.63.129.16 or the storage account
+resolves to its public IP and profiles stop mounting.
+
+A spoke row carrying its own dnsServers overrides this for that spoke.''')
+param dnsServers string = ''
 
 //
 // ENTRA ID
@@ -274,10 +304,15 @@ param identityModel string = 'entraOnly'
 @description('Use the bootstrap managed identity for the Entra work. Off skips group creation and the Entra Kerberos setup; supply group object IDs instead.')
 param useEntraManagedIdentity bool = true
 
-@description('Name of the bootstrap managed identity. Matches the default in scripts/bootstrap-entra-identity.ps1. Change it only if the script was run with -IdentityName.')
+@description('''Name of the bootstrap managed identity. Matches the default in
+scripts/bootstrap-entra-identity.ps1, so there is nothing to supply. Deliberately not on
+the wizard — override it in a parameters file on the rare occasion the script was run
+with -IdentityName.''')
 param entraManagedIdentityName string = 'id-avd-entra-ops'
 
-@description('Resource group holding the bootstrap managed identity. Matches the default in scripts/bootstrap-entra-identity.ps1. Change it only if the script was run with -ResourceGroup.')
+@description('''Resource group holding the bootstrap managed identity. Matches the
+default in scripts/bootstrap-entra-identity.ps1. Deliberately not on the wizard —
+override it in a parameters file if the script was run with -ResourceGroup.''')
 param entraManagedIdentityRgName string = 'rg-identity'
 
 @description('''Create the AVD access groups rather than taking their object IDs as
@@ -532,35 +567,30 @@ param sessionHostAcceleratedNetworking bool = true
 var namedTagPairs = filter(tagPairs, pair => !empty(pair.?name ?? ''))
 var allTags = union(tags, toObject(namedTagPairs, pair => pair.name, pair => pair.value))
 
-var hubHasFirewall = hubFirewallType != 'none'
-var deployAzureFirewall = hubFirewallType == 'azureFirewall'
+var isCreateNetwork = networkMode == 'create'
 
-// The hub exists to hold a firewall. Without one there is nothing for it to
-// carry, so no firewall means no hub resource group, no hub VNet, no route
-// tables and no peerings — just the VNets asked for on the Spokes tab.
-//
-// Consequence worth knowing: with no hub, spokes are not connected to each
-// other. Two spokes that need to talk have nothing joining them. Reported in
-// the spokesIsolatedNoHub output rather than left to be discovered.
-var deployHub = hubHasFirewall
+// Route tables are created only when there is an address to point them at. An
+// egressMode of firewall with no IP would produce a default route to nowhere,
+// which blackholes the subnet.
+var routeViaFirewall = egressMode == 'firewall' && !empty(trim(firewallPrivateIp))
 
-// The route tables need the firewall's internal IP. With FortiGate it is a
-// parameter, because the template does not deploy the appliance and cannot
-// know it; with Azure Firewall it is read from the resource, which removes a
-// whole class of transcription error.
-var firewallInternalIp = deployAzureFirewall ? azureFirewall!.outputs.privateIp : hubFirewallInternalIp
+// Peering happens only to a hub that already exists, and only for VNets this
+// deployment created. There is nothing to peer in existing mode.
+var peerToHub = isCreateNetwork && !empty(trim(peerToExistingHubVnetId))
 
-// Everything that may egress through the firewall. Spokes only — the hub's own
-// subnets do not route through it.
-var spokeAddressPrefixes = [for spoke in spokes: spoke.addressPrefix]
+// A subnet ID is
+//   /subscriptions/../resourceGroups/../providers/Microsoft.Network/virtualNetworks/<v>/subnets/<s>
+// so its VNet is the same ID with the last two segments removed. Used to link
+// existing VNets to the privatelink DNS zone, which otherwise resolves nothing
+// and the share silently falls back to its public endpoint.
+func vnetIdOfSubnet(subnetId string) string =>
+  empty(trim(subnetId)) ? '' : join(take(split(trim(subnetId), '/'), 9), '/')
+
+func lastSegment(value string) string =>
+  empty(trim(value)) ? '' : last(split(trim(value), '/'))
 
 var deployInsights = deployAvdInsights && deployMonitoring
 var deployAlertRules = deployAlerts && deployMonitoring
-
-// NVA-forwarded traffic must be allowed across peerings in both directions,
-// or the firewall's forwarded spoke-to-spoke traffic is dropped at the
-// peering rather than reaching the destination spoke.
-var peeringAllowForwardedTraffic = hubHasFirewall
 
 // Flatten spokes x their subnets into one list so NSGs (which are per
 // subnet) can be created in a single flat loop. Bicep handles one flat
@@ -598,17 +628,14 @@ var spokeVnetByName = toObject(
 var spokeSubnets = [
   for subnet in subnets: {
     spoke: subnet.spoke
-    // The literal subnet name, as typed.
-    name: empty(trim(string(subnet.?subnetName ?? '')))
-      ? 'snet-${subnet.spoke}-${subnet.name}'
-      : trim(string(subnet.subnetName))
-    // The grid's short name, kept for matching and for deriving the NSG name.
-    shortName: subnet.name
+    // The subnet's name, exactly as typed. There is no second short name to
+    // keep in step with it: the NSG is named from this one.
+    name: trim(subnet.name)
     prefix: subnet.prefix
     nsgType: subnet.nsgType
     useNatGateway: subnet.useNatGateway
     hostsPrivateEndpoints: subnet.hostsPrivateEndpoints
-    nsgName: 'nsg-${subnet.spoke}-${subnet.name}'
+    nsgName: 'nsg-${trim(subnet.name)}'
     rgName: spokeRgByName[?subnet.spoke] ?? 'rg-${subnet.spoke}'
   }
 ]
@@ -621,23 +648,26 @@ var spokeSubnets = [
 // parameters, so building the ID directly is deterministic and safe —
 // ordering is handled with dependsOn instead.
 var avdSpokes = filter(spokes, s => s.role == 'avd')
-var hasAvdSpoke = !empty(avdSpokes)
-var avdSpokeName = hasAvdSpoke ? first(avdSpokes).name : ''
+var hasAvdSpoke = isCreateNetwork && !empty(avdSpokes)
+var avdSpokeName = hasAvdSpoke ? first(avdSpokes)!.name : ''
 
 var peSubnets = filter(spokeSubnets, s => s.spoke == avdSpokeName && s.hostsPrivateEndpoints)
-var hasPeSubnet = hasAvdSpoke && !empty(peSubnets)
-// The subnet's real name, as typed, for building its resource ID.
-var peSubnetResourceName = hasPeSubnet ? first(peSubnets)!.name : ''
+var createdPeSubnet = hasAvdSpoke && !empty(peSubnets)
+var peSubnetName = createdPeSubnet ? first(peSubnets)!.name : ''
 
-var peSubnetId = hasPeSubnet
+var createdPeSubnetId = createdPeSubnet
   ? resourceId(
       subscription().subscriptionId,
       avdRgName,
       'Microsoft.Network/virtualNetworks/subnets',
       avdVnetName,
-      peSubnetResourceName
+      peSubnetName
     )
   : ''
+
+// One value whatever the mode, so everything downstream stays mode-agnostic.
+var peSubnetId = isCreateNetwork ? createdPeSubnetId : trim(existingPrivateEndpointSubnetId)
+var hasPeSubnet = !empty(peSubnetId)
 
 // Every VNet that must resolve the FSLogix share: the hub plus all spokes.
 // Linking a VNet to a private DNS zone costs nothing, so there is no reason
@@ -657,21 +687,31 @@ var spokeVnetLinks = [
   }
 ]
 
-// Empty when there is no hub, so the privatelink zone is not linked to a VNet
-// that was never created — which would fail the deployment.
-var hubVnetLink = deployHub ? [
+// The existing hub, when peering to one: its VMs need to resolve the share too.
+var hubVnetLink = peerToHub ? [
   {
-    name: hubVnetName
-    id: resourceId(
-      subscription().subscriptionId,
-      hubRgName,
-      'Microsoft.Network/virtualNetworks',
-      hubVnetName
-    )
+    name: lastSegment(peerToExistingHubVnetId)
+    id: trim(peerToExistingHubVnetId)
   }
 ] : []
 
-var dnsLinkedVnets = concat(hubVnetLink, spokeVnetLinks)
+// In existing mode there are no spokes to enumerate, so the VNets to link are
+// derived from the subnets the customer pointed at. Both may live in the same
+// VNet, hence the union: two zone links with the same name fail.
+var existingVnetIds = union(
+  empty(vnetIdOfSubnet(existingSessionHostSubnetId)) ? [] : [vnetIdOfSubnet(existingSessionHostSubnetId)],
+  empty(vnetIdOfSubnet(existingPrivateEndpointSubnetId)) ? [] : [vnetIdOfSubnet(existingPrivateEndpointSubnetId)]
+)
+
+var existingVnetLinks = [
+  for id in existingVnetIds: {
+    name: lastSegment(id)
+    id: id
+  }
+]
+
+var dnsLinkedVnets = isCreateNetwork ? concat(hubVnetLink, spokeVnetLinks) : existingVnetLinks
+
 
 // Spokes derive rg-<name>, so a spoke called 'storage' or 'mgmt' would
 // collide with the shared resource groups and the two deployments would
@@ -679,7 +719,7 @@ var dnsLinkedVnets = concat(hubVnetLink, spokeVnetLinks)
 var sharedRgNames = union(
   deployStorage ? [storageRgName] : [],
   deployMonitoring ? [monitoringRgName] : [],
-  deployHub ? [hubRgName] : []
+  isCreateNetwork || empty(avdRgName) ? [] : [avdRgName]
 )
 var spokeNames = [for spoke in spokes: spoke.name]
 
@@ -695,9 +735,15 @@ var rgNameCollisions = filter(spokeRgNames, r => contains(sharedRgNames, r))
 // The control plane lives in the AVD spoke's resource group, so it needs an
 // AVD spoke to exist. Host pools defined without one are skipped rather
 // than deployed somewhere arbitrary.
-var deployControlPlane = hasAvdSpoke && !empty(hostPools)
-var avdRgName = hasAvdSpoke ? spokeRgByName[avdSpokeName] : ''
+// In existing mode there is no spoke to take a resource group from, so one is
+// named directly. Either way the control plane needs somewhere to go.
+var avdRgName = isCreateNetwork
+  ? (hasAvdSpoke ? spokeRgByName[avdSpokeName] : '')
+  : trim(avdResourceGroupName)
+
 var avdVnetName = hasAvdSpoke ? spokeVnetByName[avdSpokeName] : ''
+
+var deployControlPlane = !empty(avdRgName) && !empty(hostPools)
 var hostPoolNameList = [for pool in hostPools: 'hp-${pool.name}']
 
 // Which subnet do session hosts land in?
@@ -711,19 +757,22 @@ var hostPoolNameList = [for pool in hostPools: 'hp-${pool.name}']
 // If the AVD spoke has no such subnet, session hosts are skipped rather than
 // placed somewhere arbitrary, and sessionHostsSkippedNoSubnet says so.
 var avdHostSubnets = filter(spokeSubnets, s => s.spoke == avdSpokeName && s.nsgType == 'avd')
-var hasSessionHostSubnet = hasAvdSpoke && !empty(avdHostSubnets)
-var sessionHostSubnetName = hasSessionHostSubnet ? first(avdHostSubnets)!.shortName : ''
-var sessionHostSubnetResourceName = hasSessionHostSubnet ? first(avdHostSubnets)!.name : ''
+var createdHostSubnet = hasAvdSpoke && !empty(avdHostSubnets)
 
-var sessionHostSubnetId = hasSessionHostSubnet
+var createdHostSubnetId = createdHostSubnet
   ? resourceId(
       subscription().subscriptionId,
       avdRgName,
       'Microsoft.Network/virtualNetworks/subnets',
       avdVnetName,
-      sessionHostSubnetResourceName
+      first(avdHostSubnets)!.name
     )
   : ''
+
+// One value whatever the mode.
+var sessionHostSubnetId = isCreateNetwork ? createdHostSubnetId : trim(existingSessionHostSubnetId)
+var hasSessionHostSubnet = !empty(sessionHostSubnetId)
+var sessionHostSubnetName = lastSegment(sessionHostSubnetId)
 
 // Windows computer names cap at 15 characters and the module appends '-<index>',
 // so the prefix is truncated to 11. Two pools whose names agree in their first
@@ -747,12 +796,27 @@ var avdDiagnosticsWorkspaceId = deployMonitoring ? logAnalytics!.outputs.workspa
 // Anything else is a spoke whose VMs cannot reach the internet once its
 // subnets are private — which for an AVD spoke means session hosts that
 // never register.
+// Session hosts are the one thing that cannot survive this. They reach the AVD
+// service over the internet to register, so a host on a private subnet with no
+// NAT gateway and no firewall route never comes up — it builds, the extensions
+// time out, and the deployment fails twenty minutes in or, worse, succeeds with
+// a host nobody can connect to.
+//
+// Standalone topology makes this easy to get wrong, because there is no firewall
+// route to fall back on: every VNet needs its own NAT gateway.
 var spokesWithoutOutboundList = [
-  for spoke in spokes: (hubHasFirewall || (spoke.natGateway && !empty(filter(
+  for spoke in spokes: (routeViaFirewall || (spoke.natGateway && !empty(filter(
     subnets,
     s => s.spoke == spoke.name && s.useNatGateway
   )))) ? '' : spoke.name
 ]
+
+var spokesWithoutOutbound = filter(spokesWithoutOutboundList, n => !empty(n))
+
+// Whether the spoke the session hosts land in can actually reach the internet.
+// They are skipped when it cannot, rather than built into a state where they
+// can never register.
+var avdSpokeHasOutbound = !hasAvdSpoke || !contains(spokesWithoutOutbound, avdSpokeName)
 
 // Everything Entra depends on the bootstrap identity. Without it both
 // deployment scripts are skipped and group object IDs have to be supplied by
@@ -771,13 +835,26 @@ var entraIdentityId = useEntraManagedIdentity
 var hasEntraIdentity = !empty(entraIdentityId)
 var isEntraOnly = identityModel == 'entraOnly'
 
-// Group creation is a cloud-only affair. In a hybrid tenant the access groups
-// live in Active Directory and are synced up; a group created in Entra ID
-// cannot be written back, so creating one here would produce a second group
-// that on-premises knows nothing about.
-var doCreateGroups = createEntraGroups && hasEntraIdentity && isEntraOnly
+// Available under both identity models. The groups exist to carry Azure RBAC —
+// Desktop Virtualization User on the application group, the SMB share roles on
+// the storage account — and an Entra group holds synced users as happily as
+// cloud-only ones, so those assignments work either way.
+//
+// The caveat, which matters only once session hosts exist: a group created here
+// is cloud-only and cannot be managed from on-premises AD, and its SID is a
+// cloud SID. File-level NTFS permissions on the share resolve group SIDs from
+// the user's Kerberos ticket, which for a hybrid identity carries the SIDs of
+// its AD groups. So for NTFS specifically, a synced AD group is the safer
+// choice. Share-level access is unaffected.
+var doCreateGroups = createEntraGroups && hasEntraIdentity
 
-var doKerberosSetup = deployStorage && storageEnableEntraKerberos && configureEntraKerberos && hasEntraIdentity
+// Entra Kerberos needs identities that already exist and are synced. Under
+// hybrid on a first pass neither is true, so both halves are deferred until
+// the domain controller is in place.
+var entraKerberosReady = isEntraOnly || hybridDomainControllerReady
+
+var doEnableEntraKerberos = storageEnableEntraKerberos && entraKerberosReady
+var doKerberosSetup = deployStorage && doEnableEntraKerberos && configureEntraKerberos && hasEntraIdentity
 
 // Created groups take precedence over supplied ones, so the two can never
 // disagree about which group is which.
@@ -828,75 +905,27 @@ resource entraIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01
 //
 // RESOURCE GROUPS — one per spoke
 //
-resource hubRg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (deployHub) {
-  name: hubRgName
-  location: location
-  tags: allTags
-}
-
 resource spokeRgs 'Microsoft.Resources/resourceGroups@2024-03-01' = [
-  for spoke in spokes: {
+  for spoke in spokes: if (isCreateNetwork) {
     name: spokeRgByName[spoke.name]
     location: location
+    tags: allTags
   }
 ]
 
-//
-// HUB VNET
-//
-module hub 'modules/hub.bicep' = if (deployHub) {
-  name: 'hub'
-  scope: hubRg
-  params: {
-    tags: allTags
-    location: location
-    vnetName: hubVnetName
-    addressPrefix: hubAddressPrefix
-    gatewaySubnetPrefix: gatewaySubnetPrefix
-    firewallType: hubFirewallType
-    fgtExternalPrefix: fgtExternalPrefix
-    fgtInternalPrefix: fgtInternalPrefix
-    fgtHaPrefix: fgtHaPrefix
-    fgtMgmtPrefix: fgtMgmtPrefix
-    deployBastionSubnet: deployBastionSubnet
-    bastionSubnetPrefix: bastionSubnetPrefix
-    azureFirewallSubnetPrefix: azureFirewallSubnetPrefix
-    azureFirewallManagementSubnetPrefix: azureFirewallManagementSubnetPrefix
-    azureFirewallTier: azureFirewallTier
-  }
-}
-
-//
-// AZURE FIREWALL
-//
-// Deployed into the hub resource group. The module chains its own rule
-// collection group ahead of the firewall, and the spoke route tables below
-// depend on this module — so a spoke's default route is never pointed at a
-// firewall that has no rules yet. Session hosts Entra join on first boot, and
-// that join going through an unconfigured firewall is a silent failure.
-//
-module azureFirewall 'modules/azureFirewall.bicep' = if (deployAzureFirewall) {
-  name: 'azureFirewall'
-  scope: hubRg
-  params: {
-    tags: allTags
-    location: location
-    firewallName: 'afw-hub'
-    policyName: 'afwp-hub'
-    tier: azureFirewallTier
-    hubVnetId: hub!.outputs.vnetId
-    allowedSourceAddresses: spokeAddressPrefixes
-    logAnalyticsWorkspaceId: deployMonitoring ? logAnalytics!.outputs.workspaceId : ''
-    availabilityZones: azureFirewallZones
-    allowIntuneEnrolment: sessionHostEnrolWithIntune
-  }
+// In existing mode the network is somebody else's, but the AVD resources still
+// need a home of their own.
+resource avdRg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (!isCreateNetwork && !empty(avdRgName)) {
+  name: avdRgName
+  location: location
+  tags: allTags
 }
 
 //
 // NSGS — one per subnet, flat loop
 //
 module nsgs 'modules/nsg.bicep' = [
-  for (s, i) in spokeSubnets: {
+  for (s, i) in spokeSubnets: if (isCreateNetwork) {
     name: 'nsg-${s.spoke}-${s.name}'
     scope: resourceGroup(s.rgName)
     dependsOn: [
@@ -915,7 +944,7 @@ module nsgs 'modules/nsg.bicep' = [
 // ROUTE TABLES — one per spoke, only when the hub has a firewall
 //
 module routeTables 'modules/routeTable.bicep' = [
-  for (spoke, i) in spokes: if (hubHasFirewall) {
+  for (spoke, i) in spokes: if (isCreateNetwork && routeViaFirewall) {
     name: 'rt-${spoke.name}'
     scope: resourceGroup(spokeRgByName[spoke.name])
     dependsOn: [
@@ -925,7 +954,7 @@ module routeTables 'modules/routeTable.bicep' = [
       tags: allTags
       location: location
       routeTableName: 'rt-${spoke.name}'
-      firewallInternalIp: firewallInternalIp
+      firewallInternalIp: trim(firewallPrivateIp)
     }
   }
 ]
@@ -938,7 +967,7 @@ module routeTables 'modules/routeTable.bicep' = [
 // monthly cost, which is why this is opt-in per spoke.
 //
 module natGateways 'modules/natGateway.bicep' = [
-  for (spoke, i) in spokes: if (spoke.natGateway) {
+  for (spoke, i) in spokes: if (isCreateNetwork && spoke.natGateway) {
     name: 'nat-${spoke.name}'
     scope: resourceGroup(spokeRgByName[spoke.name])
     dependsOn: [
@@ -961,28 +990,28 @@ module natGateways 'modules/natGateway.bicep' = [
 // subnets; the index lookup into nsgs[] finds the NSG built for each.
 //
 
-// DNS servers are typed into the Spokes grid as free text, comma or semicolon
-// separated, because that is how people write a list of IPs.
+// One list of DNS servers for every VNet, because in practice every VNet in a
+// customer's estate resolves against the same domain controllers. A spoke can
+// still carry its own dnsServers in a parameters file, and that wins.
 //
-// split() on an empty string returns [''] rather than [], so without the
-// filter a spoke with no DNS servers would be handed one empty string and the
-// VNet would be rejected. Blank entries from a trailing separator go the same
-// way.
-var spokeDnsServers = [
-  for spoke in spokes: filter(
-    split(replace(trim(string(spoke.?dnsServers ?? '')), ';', ','), ','),
-    s => !empty(trim(s))
-  )
-]
+// Typed as free text, comma or semicolon separated, because that is how people
+// write a list of IPs.
+//
+// split() on an empty string returns [''] rather than [], so without the filter
+// a spoke with no DNS servers would be handed one empty string and the VNet
+// would be rejected. Blank entries from a trailing separator go the same way.
+func parseDnsServers(value string) array =>
+  filter(split(replace(trim(value), ';', ','), ','), s => !empty(trim(s)))
 
-// Reported as a warning output. Built here because a for-expression cannot sit
-// inside a conditional in an output declaration.
-var spokesMissingDns = isEntraOnly ? [] : map(
-  filter(range(0, length(spokes)), i => empty(spokeDnsServers[i])),
-  i => spokes[i].name
-)
+var defaultDnsServers = parseDnsServers(dnsServers)
+
+var spokeDnsServers = [
+  for spoke in spokes: empty(trim(string(spoke.?dnsServers ?? '')))
+    ? defaultDnsServers
+    : parseDnsServers(string(spoke.dnsServers))
+]
 module spokeVnets 'modules/spoke.bicep' = [
-  for (spoke, si) in spokes: {
+  for (spoke, si) in spokes: if (isCreateNetwork) {
     name: 'spoke-${spoke.name}'
     scope: resourceGroup(spokeRgByName[spoke.name])
     dependsOn: [
@@ -1009,7 +1038,7 @@ module spokeVnets 'modules/spoke.bicep' = [
           hostsPrivateEndpoints: s.hostsPrivateEndpoints
         }
       )
-      routeTableName: hubHasFirewall ? 'rt-${spoke.name}' : ''
+      routeTableName: routeViaFirewall ? 'rt-${spoke.name}' : ''
       natGatewayName: spoke.natGateway ? 'nat-${spoke.name}' : ''
       privateSubnets: privateSubnets
       // Per-spoke, because a hybrid deployment may want the AVD spoke pointed
@@ -1022,15 +1051,27 @@ module spokeVnets 'modules/spoke.bicep' = [
 //
 // PEERINGS — two per spoke that opts in
 //
+// Peering, to a hub that already exists.
+//
+// Both sides of a peering have to be created, and the hub side lives in the
+// customer's own resource group. That is reachable only when the hub is in the
+// same subscription as this deployment — a subscription-scoped template cannot
+// deploy into another subscription. When it is elsewhere, only the spoke side
+// is created and hubSidePeeringNotCreated says so: until their network team
+// adds the matching peering, neither side carries traffic.
+var hubVnetSubscriptionId = peerToHub ? split(trim(peerToExistingHubVnetId), '/')[2] : ''
+var hubVnetRgName = peerToHub ? split(trim(peerToExistingHubVnetId), '/')[4] : ''
+var canPeerHubSide = peerToHub && hubVnetSubscriptionId == subscription().subscriptionId
+
 module hubToSpoke 'modules/peering.bicep' = [
-  for (spoke, i) in spokes: if (spoke.peerToHub) {
+  for (spoke, i) in spokes: if (canPeerHubSide && (spoke.?peerToHub ?? false)) {
     name: 'peer-hub-to-${spoke.name}'
-    scope: hubRg
+    scope: resourceGroup(hubVnetRgName)
     params: {
-      localVnetName: hubVnetName
-      remoteVnetId: spokeVnets[i].outputs.vnetId
+      localVnetName: lastSegment(peerToExistingHubVnetId)
+      remoteVnetId: spokeVnets[i]!.outputs.vnetId
       peeringName: 'hub-to-${spoke.name}'
-      allowForwardedTraffic: peeringAllowForwardedTraffic
+      allowForwardedTraffic: true
       allowGatewayTransit: false
       useRemoteGateways: false
     }
@@ -1038,15 +1079,20 @@ module hubToSpoke 'modules/peering.bicep' = [
 ]
 
 module spokeToHub 'modules/peering.bicep' = [
-  for (spoke, i) in spokes: if (spoke.peerToHub) {
+  for (spoke, i) in spokes: if (peerToHub && (spoke.?peerToHub ?? false)) {
     name: 'peer-${spoke.name}-to-hub'
     scope: resourceGroup(spokeRgByName[spoke.name])
     params: {
-      localVnetName: spokeVnets[i].outputs.vnetName
-      remoteVnetId: hub!.outputs.vnetId
+      localVnetName: spokeVnets[i]!.outputs.vnetName
+      remoteVnetId: trim(peerToExistingHubVnetId)
       peeringName: '${spoke.name}-to-hub'
-      allowForwardedTraffic: peeringAllowForwardedTraffic
+      // The hub may carry a firewall or a gateway; traffic forwarded from it is
+      // dropped without this, and the symptom is a route that silently fails
+      // rather than an error.
+      allowForwardedTraffic: true
       allowGatewayTransit: false
+      // Left false deliberately. A spoke using the hub's gateway is a decision
+      // about the customer's connectivity, not something to turn on for them.
       useRemoteGateways: false
     }
   }
@@ -1055,13 +1101,17 @@ module spokeToHub 'modules/peering.bicep' = [
 //
 // ENTRA ID — access groups
 //
-// Deployed into the hub resource group because it is the one group that always
-// exists. The groups themselves are tenant objects and have nothing to do with
-// that resource group; the deployment script just needs somewhere to run.
+// Deployed into the AVD resource group. The groups themselves are tenant
+// objects and have nothing to do with it; the deployment script just needs
+// somewhere to run.
 //
-module entraGroups 'modules/entraGroups.bicep' = if (doCreateGroups) {
+module entraGroups 'modules/entraGroups.bicep' = if (doCreateGroups && !empty(avdRgName)) {
   name: 'entraGroups'
-  scope: hubRg
+  scope: resourceGroup(avdRgName)
+  dependsOn: [
+    spokeRgs
+    avdRg
+  ]
   params: {
     tags: allTags
     location: location
@@ -1105,7 +1155,7 @@ module storage 'modules/storage.bicep' = if (deployStorage) {
     allowSharedKeyAccess: storageAllowSharedKeyAccess
     publicNetworkAccess: storagePublicNetworkAccess
     largeFileSharesState: storageLargeFileSharesState
-    enableEntraKerberos: storageEnableEntraKerberos
+    enableEntraKerberos: doEnableEntraKerberos
     defaultSharePermission: storageDefaultSharePermission
   }
 }
@@ -1137,7 +1187,6 @@ module fslogixPrivateAccess 'modules/fslogixPrivateAccess.bicep' = if (deploySto
   scope: resourceGroup(storageRgName)
   dependsOn: [
     spokeVnets
-    hub
   ]
   params: {
     tags: allTags
@@ -1183,18 +1232,6 @@ module logAnalytics 'modules/logAnalytics.bicep' = if (deployMonitoring) {
   }
 }
 
-module hubVnetDiagnostics 'modules/vnetDiagnostics.bicep' = if (deployMonitoring) {
-  name: 'diag-hub'
-  scope: hubRg
-  dependsOn: [
-    hub
-  ]
-  params: {
-    vnetName: hubVnetName
-    workspaceId: logAnalytics!.outputs.workspaceId
-  }
-}
-
 module spokeVnetDiagnostics 'modules/vnetDiagnostics.bicep' = [
   for (spoke, i) in spokes: if (deployMonitoring) {
     name: 'diag-${spoke.name}'
@@ -1221,10 +1258,19 @@ module storageDiagnostics 'modules/storageDiagnostics.bicep' = if (deployMonitor
 // Session host telemetry for AVD Insights. The control plane half of Insights
 // is the diagnostic settings already wired onto the host pool, application
 // groups and workspace; this is the other half.
-module avdInsights 'modules/avdInsightsDcr.bicep' = if (deployInsights) {
+// Deployed next to the host pool, not with the rest of the monitoring.
+//
+// The AVD Insights configuration workbook lists the data collection rules in
+// the HOST POOL's resource group by default. A rule sitting in the monitoring
+// group is invisible to it, so the blade reports the session hosts as not
+// configured and offers to create a second, competing rule. Tidy in principle,
+// wrong in practice.
+module avdInsights 'modules/avdInsightsDcr.bicep' = if (deployInsights && !empty(avdRgName)) {
   name: 'avdInsights'
-  scope: resourceGroup(monitoringRgName)
+  scope: resourceGroup(avdRgName)
   dependsOn: [
+    spokeRgs
+    avdRg
     monitoringRg
   ]
   params: {
@@ -1343,7 +1389,7 @@ module sessionHosts 'modules/sessionHost.bicep' = [
   // isEntraOnly is part of the condition, not a separate guard: under hybrid this
   // template deliberately builds the landing zone and no session hosts, because
   // there is no domain controller for them to join.
-  for (pool, i) in hostPools: if (deployControlPlane && deploySessionHosts && isEntraOnly && hasSessionHostSubnet && sessionHostCounts[i] > 0) {
+  for (pool, i) in hostPools: if (deployControlPlane && deploySessionHosts && isEntraOnly && hasSessionHostSubnet && avdSpokeHasOutbound && sessionHostCounts[i] > 0) {
     name: 'sh-${pool.name}'
     scope: resourceGroup(avdRgName)
     dependsOn: [
@@ -1429,24 +1475,24 @@ module fslogixNtfs 'modules/fslogixNtfsPermissions.bicep' = if (doNtfsPermission
 //
 // OUTPUTS
 //
-@description('Resource ID of the hub VNet. Empty when no firewall was selected, in which case no hub is created at all.')
-output hubVnetId string = deployHub ? hub!.outputs.vnetId : ''
-output spokeVnetIds array = [for (spoke, i) in spokes: spokeVnets[i].outputs.vnetId]
+@description('Resource IDs of the VNets this deployment created. Empty when networkMode is existing.')
+output createdVnetIds array = [for (spoke, i) in spokes: isCreateNetwork ? spokeVnets[i]!.outputs.vnetId : '']
 
-// false means bastionSubnetPrefix is smaller than /26, which Azure rejects.
-output bastionPrefixValid bool = deployHub ? hub!.outputs.bastionPrefixValid : true
+@description('The network mode this deployment used.')
+output networkModeUsed string = networkMode
 
-@description('''True when no firewall was selected, so no hub was created. The spokes
-are then independent VNets with nothing joining them: a host in one cannot reach a host
-in another. Peer them directly, or select a firewall, if they need to talk.''')
-output spokesIsolatedNoHub bool = !deployHub && length(spokes) > 1
+@description('''True when a hub VNet was given to peer to but it is in another
+subscription, so only the spoke side of each peering was created. Both sides must exist
+before traffic flows: their network team adds the matching peering on the hub, or this
+template is deployed into their subscription instead.''')
+output hubSidePeeringNotCreated bool = peerToHub && !canPeerHubSide
 
 @description('''Spokes with no outbound internet path — no hub firewall route and no
 NAT gateway attached to any of their subnets. Empty is what you want. A non-empty
 list does NOT fail the deployment: it succeeds and the VMs simply cannot reach the
 internet, which for an AVD spoke means session hosts that never register. Check
 this before deploying.''')
-output spokesWithoutOutbound array = filter(spokesWithoutOutboundList, s => !empty(s))
+output spokesWithoutOutbound array = spokesWithoutOutbound
 
 @description('Resource ID of the FSLogix storage account, empty when storage is not deployed.')
 output storageAccountId string = deployStorage ? storage!.outputs.storageAccountId : ''
@@ -1515,7 +1561,14 @@ output storageEntraApplicationId string = doKerberosSetup ? entraKerberos!.outpu
 so group creation and the Entra Kerberos setup were both skipped. The deployment still
 succeeds; the share will not authenticate until those steps are done by hand. Run
 scripts/bootstrap-entra-identity.ps1 and redeploy.''')
-output entraWorkSkippedNoIdentity bool = (createEntraGroups || (configureEntraKerberos && deployStorage && storageEnableEntraKerberos)) && !hasEntraIdentity
+output entraWorkSkippedNoIdentity bool = (createEntraGroups || (configureEntraKerberos && deployStorage && doEnableEntraKerberos)) && !hasEntraIdentity
+
+@description('''True when the Entra Kerberos setup was deferred because identityModel is
+hybrid and the domain controller is not in place yet. The storage account has no AADKERB
+and no admin consent was granted, so profiles will not mount until you build the domain
+controller, get Entra Connect syncing, and redeploy with hybridDomainControllerReady
+ticked. This is the intended first-pass state, not a failure.''')
+output entraKerberosDeferred bool = !entraKerberosReady && deployStorage && storageEnableEntraKerberos
 
 @description('''True when NTFS permissions were requested but could not be set, because
 there is no session host to run from or no users group to grant rights to. Until they
@@ -1530,12 +1583,6 @@ output fslogixNtfsPermissionsSkipped bool = setFslogixNtfsPermissions && deployS
 //
 @description('The identity model this deployment was built for.')
 output identityModelUsed string = identityModel
-
-@description('''Spokes with no DNS servers set, in a hybrid deployment. Azure-provided
-DNS cannot resolve an Active Directory domain, so hosts in those spokes will not find a
-domain controller and the join fails. Set dnsServers on the spoke to the domain
-controllers.''')
-output hybridSpokesWithoutDns array = spokesMissingDns
 
 @description('''True when identityModel is hybrid and no group object IDs were supplied.
 Hybrid deployments cannot create their own groups — the groups live in Active Directory
@@ -1553,20 +1600,6 @@ output hybridSessionHostsSkipped bool = !isEntraOnly && deploySessionHosts
 managed identity was supplied, so the desktops are all still called SessionDesktop.
 The rename needs a REST call, which needs the identity.''')
 output desktopNamesSkippedNoIdentity bool = setDesktopFriendlyNames && !empty(desktopsToRename) && !hasEntraIdentity
-
-@description('''False when AzureFirewallSubnet is smaller than /26, which Azure rejects.
-Only meaningful when hubFirewallType is azureFirewall.''')
-output azureFirewallPrefixValid bool = deployHub ? hub!.outputs.azureFirewallPrefixValid : true
-
-@description('''False when AzureFirewallManagementSubnet is smaller than /26. Only
-meaningful on the Basic tier, which requires that subnet.''')
-output azureFirewallMgmtPrefixValid bool = deployHub ? hub!.outputs.azureFirewallMgmtPrefixValid : true
-
-@description('Private IP of the Azure Firewall, which the spoke route tables point at. Empty when no Azure Firewall was deployed.')
-output azureFirewallPrivateIp string = deployAzureFirewall ? azureFirewall!.outputs.privateIp : ''
-
-@description('Public IP of the Azure Firewall — the address spoke traffic egresses from.')
-output azureFirewallPublicIp string = deployAzureFirewall ? azureFirewall!.outputs.publicIp : ''
 
 @description('''True when alerts were deployed with no email address, so they fire and
 appear in the portal but nobody is notified. Harmless if that is deliberate.''')

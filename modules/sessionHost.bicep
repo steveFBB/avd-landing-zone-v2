@@ -399,21 +399,6 @@ resource fslogixConfiguration 'Microsoft.Compute/virtualMachines/runCommands@202
           New-Item -Path $kerberos -Force | Out-Null
           Set-ItemProperty -Path $kerberos -Name CloudKerberosTicketRetrievalEnabled -Value 1 -Type DWord
 
-          # Both are documented prerequisites for Entra Kerberos and must be
-          # RUNNING, not merely present. On Windows 11 multi-session
-          # WinHttpAutoProxySvc is trigger-start and is often stopped, which
-          # stalls ticket retrieval rather than failing it.
-          foreach ($svcName in 'WinHttpAutoProxySvc', 'iphlpsvc') {
-            $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-            if ($null -eq $svc) {
-              Write-Output "WARNING: service $svcName not present on this image."
-              continue
-            }
-            Set-Service -Name $svcName -StartupType Automatic
-            if ($svc.Status -ne 'Running') { Start-Service -Name $svcName }
-            Write-Output "$svcName -> $((Get-Service -Name $svcName).Status)"
-          }
-
           # FSLogix profile containers.
           $fslogix = 'HKLM:\SOFTWARE\FSLogix\Profiles'
           New-Item -Path $fslogix -Force | Out-Null
@@ -432,6 +417,59 @@ resource fslogixConfiguration 'Microsoft.Compute/virtualMachines/runCommands@202
           # Folder names as <username>_<SID> rather than <SID>_<username>, so
           # the share is readable by a human looking for one user's container.
           Set-ItemProperty -Path $fslogix -Name FlipFlopProfileDirectoryName -Value 1 -Type DWord
+
+          # ---------------------------------------------------------------
+          # Entra Kerberos service prerequisites — BEST EFFORT.
+          # ---------------------------------------------------------------
+          # Both are documented prerequisites and must be RUNNING, not merely
+          # present. On Windows 11 multi-session WinHttpAutoProxySvc is
+          # trigger-start and is often stopped, which stalls ticket retrieval
+          # rather than failing it outright.
+          #
+          # Set-Service on WinHttpAutoProxySvc fails with "Access is denied"
+          # EVEN AS SYSTEM: the service's own security descriptor refuses
+          # configuration changes. So the start type is written straight to the
+          # registry when the API route is refused.
+          #
+          # Nothing here is allowed to fail the script. This runs AFTER the
+          # FSLogix configuration above for the same reason — an optional
+          # prerequisite must never be able to stop the thing it is a
+          # prerequisite for. The first version of this did exactly that: the
+          # denial aborted the script before FSLogix was configured at all, and
+          # the host came up with no profile.
+          $startTypeValues = @{ Automatic = 2; Manual = 3 }
+
+          foreach ($svcName in 'WinHttpAutoProxySvc', 'iphlpsvc') {
+            try {
+              $svc = Get-Service -Name $svcName -ErrorAction Stop
+            } catch {
+              Write-Output "WARNING: service $svcName is not present on this image."
+              continue
+            }
+
+            try {
+              Set-Service -Name $svcName -StartupType Automatic -ErrorAction Stop
+              Write-Output "$svcName start type set to Automatic."
+            } catch {
+              try {
+                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName" `
+                  -Name Start -Value $startTypeValues.Automatic -Type DWord -ErrorAction Stop
+                Write-Output "$svcName start type set to Automatic via the registry (Set-Service was denied)."
+              } catch {
+                Write-Output "WARNING: could not set $svcName to Automatic. It is trigger-started, so this is usually survivable: $($_.Exception.Message)"
+              }
+            }
+
+            if ((Get-Service -Name $svcName).Status -ne 'Running') {
+              try {
+                Start-Service -Name $svcName -ErrorAction Stop
+              } catch {
+                Write-Output "WARNING: could not start $svcName : $($_.Exception.Message)"
+              }
+            }
+
+            Write-Output "$svcName -> $((Get-Service -Name $svcName).Status)"
+          }
 
           Write-Output "FSLogix configured against $VhdLocation"
           Get-ItemProperty -Path $fslogix | Format-List | Out-String | Write-Output

@@ -138,7 +138,36 @@
               "visible": "[equals(steps('identity').identityModel, 'hybrid')]",
               "options": {
                 "icon": "Info",
-                "text": "Hybrid builds the landing zone WITHOUT session hosts: networks, storage, monitoring, the host pools, application groups and workspace are all created, and the hosts are not. Add a domain controller afterwards, then create the session hosts with your usual process. Host pool rows on the AVD tab are still honoured \u2014 the pools are created and left empty. The access groups must already exist in Active Directory and be synced, so supply their object IDs below rather than having them created."
+                "text": "Hybrid builds the landing zone WITHOUT session hosts: networks, storage, monitoring, the host pools, application groups and workspace are all created, and the hosts are not. Add a domain controller afterwards, then create the session hosts with your usual process. Host pool rows on the AVD tab are still honoured \u2014 the pools are created and left empty."
+              }
+            },
+            {
+              "name": "hybridDomainControllerReady",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "The domain controller exists and Entra Connect is syncing",
+              "visible": "[equals(steps('identity').identityModel, 'hybrid')]",
+              "toolTip": "Leave unticked on the first deployment. The Entra Kerberos setup is deferred until the domain controller is in place and users are synced, because it cannot work before then."
+            },
+            {
+              "name": "kerberosDeferredNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[and(equals(steps('identity').identityModel, 'hybrid'), not(steps('identity').hybridDomainControllerReady))]",
+              "options": {
+                "icon": "Info",
+                "text": "Entra Kerberos will be deferred. The storage account is created without AADKERB and no admin consent is granted, because both need users already synced from Active Directory. Build the domain controller into the hub identity subnet, get Entra Connect running, then redeploy with the box above ticked. Profiles will not mount until then, which is expected on a first pass."
+              }
+            },
+            {
+              "name": "dnsServers",
+              "type": "Microsoft.Common.TextBox",
+              "label": "DNS servers for every VNet",
+              "placeholder": "10.10.0.4,10.10.0.5",
+              "visible": "[and(equals(steps('identity').identityModel, 'hybrid'), steps('identity').hybridDomainControllerReady)]",
+              "toolTip": "The domain controllers. Every VNet this template creates will use them. They must forward to 168.63.129.16, or the storage account resolves to its public IP and profiles stop mounting.",
+              "constraints": {
+                "required": false,
+                "regex": "^$|^\\s*(\\d{1,3}\\.){3}\\d{1,3}\\s*([,;]\\s*(\\d{1,3}\\.){3}\\d{1,3}\\s*)*$",
+                "validationMessage": "One or more IP addresses, separated by commas."
               }
             },
             {
@@ -166,34 +195,6 @@
               "toolTip": "Found by name, so there is nothing to enter. Untick only if scripts/bootstrap-entra-identity.ps1 has not been run in this tenant."
             },
             {
-              "name": "identityOverrides",
-              "type": "Microsoft.Common.Section",
-              "label": "Identity location (only if the defaults were changed)",
-              "visible": "[steps('identity').useEntraManagedIdentity]",
-              "elements": [
-                {
-                  "name": "entraManagedIdentityName",
-                  "type": "Microsoft.Common.TextBox",
-                  "label": "Identity name",
-                  "defaultValue": "id-avd-entra-ops",
-                  "toolTip": "Matches the default in bootstrap-entra-identity.ps1. Change only if you ran it with -IdentityName.",
-                  "constraints": {
-                    "required": true
-                  }
-                },
-                {
-                  "name": "entraManagedIdentityRgName",
-                  "type": "Microsoft.Common.TextBox",
-                  "label": "Identity resource group",
-                  "defaultValue": "rg-identity",
-                  "toolTip": "Matches the default in bootstrap-entra-identity.ps1. Change only if you ran it with -ResourceGroup.",
-                  "constraints": {
-                    "required": true
-                  }
-                }
-              ]
-            },
-            {
               "name": "noIdentityNotice",
               "type": "Microsoft.Common.InfoBox",
               "visible": "[not(steps('identity').useEntraManagedIdentity)]",
@@ -208,7 +209,7 @@
               "label": "Create the AVD access groups",
               "defaultValue": true,
               "toolTip": "Groups are matched by display name, so redeploying reuses them rather than creating duplicates.",
-              "visible": "[equals(steps('identity').identityModel, 'entraOnly')]"
+              "visible": "[steps('identity').useEntraManagedIdentity]"
             },
             {
               "name": "groupNames",
@@ -238,7 +239,16 @@
                   "visible": true
                 }
               ],
-              "visible": "[and(equals(steps('identity').identityModel, 'entraOnly'), steps('identity').createEntraGroups)]"
+              "visible": "[and(steps('identity').useEntraManagedIdentity, steps('identity').createEntraGroups)]"
+            },
+            {
+              "name": "hybridGroupsNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[and(equals(steps('identity').identityModel, 'hybrid'), and(steps('identity').useEntraManagedIdentity, steps('identity').createEntraGroups))]",
+              "options": {
+                "icon": "Warning",
+                "text": "Groups created here are cloud-only: they hold synced users and carry Azure RBAC fine, but they cannot be managed from on-premises AD, and their SIDs are cloud SIDs. Once session hosts exist, file-level NTFS permissions on the profile share resolve group SIDs from the user's Kerberos ticket, which for a hybrid identity carries the SIDs of its AD groups \u2014 so for NTFS specifically a synced AD group is the safer choice. Share-level access is unaffected."
+              }
             },
             {
               "name": "groupIds",
@@ -278,7 +288,7 @@
                   "visible": true
                 }
               ],
-              "visible": "[or(equals(steps('identity').identityModel, 'hybrid'), not(steps('identity').createEntraGroups))]"
+              "visible": "[not(and(steps('identity').useEntraManagedIdentity, steps('identity').createEntraGroups))]"
             },
             {
               "name": "configureEntraKerberos",
@@ -286,7 +296,7 @@
               "label": "Finish the Entra Kerberos setup on the storage account",
               "defaultValue": true,
               "toolTip": "Grants admin consent on the application Azure creates for the storage account, and adds the kdc_enable_cloud_group_sids tag. Both are mandatory for cloud-only identities \u2014 without the tag, authentication to the share fails.",
-              "visible": "[steps('identity').useEntraManagedIdentity]"
+              "visible": "[and(steps('identity').useEntraManagedIdentity, or(equals(steps('identity').identityModel, 'entraOnly'), steps('identity').hybridDomainControllerReady))]"
             },
             {
               "name": "setFslogixNtfsPermissions",
@@ -309,251 +319,153 @@
         },
         {
           "name": "hub",
-          "label": "Firewall",
+          "label": "Network",
           "elements": [
             {
-              "name": "hubFirewallType",
+              "name": "networkMode",
               "type": "Microsoft.Common.OptionsGroup",
-              "label": "Hub firewall",
-              "defaultValue": "None \u2014 spokes use a NAT gateway for outbound",
-              "toolTip": "A FortiGate provides outbound internet for the spokes and adds four NIC subnets. Without one, spokes need NAT gateways instead.",
+              "label": "Virtual networks",
+              "defaultValue": "Create them",
+              "toolTip": "Create the VNets from the Spokes and Subnets tabs, or point at ones that already exist.",
               "constraints": {
-                "required": true,
                 "allowedValues": [
                   {
-                    "label": "None \u2014 spokes use a NAT gateway for outbound",
-                    "value": "none"
+                    "label": "Create them",
+                    "value": "create"
                   },
                   {
-                    "label": "Azure Firewall \u2014 deployed with AVD egress rules",
-                    "value": "azureFirewall"
-                  },
-                  {
-                    "label": "FortiGate \u2014 subnets only, appliance deployed separately",
-                    "value": "fortigate"
+                    "label": "Use existing VNets",
+                    "value": "existing"
                   }
-                ]
+                ],
+                "required": true
               },
               "visible": true
             },
             {
-              "name": "noFirewallNotice",
+              "name": "noHubNotice",
               "type": "Microsoft.Common.InfoBox",
-              "visible": "[equals(steps('hub').hubFirewallType, 'none')]",
+              "visible": true,
               "options": {
                 "icon": "Info",
-                "text": "No firewall means no hub is created at all: no hub resource group, no hub VNet, no route tables and no peerings. You get exactly the VNets you define on the Spokes tab. Note that they will not be connected to each other \u2014 peer them directly if they need to talk. Each spoke that needs outbound internet should have a NAT gateway."
+                "text": "This template does not create a hub. A hub carries the customer's gateway, firewall and domain controllers and belongs to whoever runs their network \u2014 an AVD workload peers into it. Give an existing hub below to peer the created VNets to it."
               }
             },
             {
-              "name": "hubRgName",
-              "type": "Microsoft.Common.TextBox",
-              "label": "Hub resource group name",
-              "defaultValue": "rg-hub",
-              "toolTip": "Must not match any spoke name, since each spoke creates rg-<name>.",
-              "constraints": {
-                "required": true,
-                "regex": "^[a-zA-Z0-9-_]{1,64}$",
-                "validationMessage": "Letters, numbers, hyphens and underscores, up to 64 characters."
-              },
-              "visible": "[not(equals(steps('hub').hubFirewallType, 'none'))]"
-            },
-            {
-              "name": "hubVnetName",
-              "type": "Microsoft.Common.TextBox",
-              "label": "Hub virtual network name",
-              "defaultValue": "vnet-hub",
-              "constraints": {
-                "required": true,
-                "regex": "^[a-zA-Z0-9-_.]{2,64}$",
-                "validationMessage": "2 to 64 characters."
-              },
-              "visible": "[not(equals(steps('hub').hubFirewallType, 'none'))]"
-            },
-            {
-              "name": "hubAddressPrefix",
-              "type": "Microsoft.Common.TextBox",
-              "label": "Hub address space",
-              "defaultValue": "10.0.0.0/16",
-              "toolTip": "CIDR range for the hub VNet. All hub subnets must fit inside it.",
-              "constraints": {
-                "required": true,
-                "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/[0-9]{1,2}$",
-                "validationMessage": "Enter a CIDR range, for example 10.0.0.0/16."
-              },
-              "visible": "[not(equals(steps('hub').hubFirewallType, 'none'))]"
-            },
-            {
-              "name": "gatewaySubnetPrefix",
-              "type": "Microsoft.Common.TextBox",
-              "label": "GatewaySubnet prefix",
-              "defaultValue": "10.0.0.0/24",
-              "toolTip": "Azure fixes the name of this subnet. It is always created.",
-              "constraints": {
-                "required": true,
-                "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/[0-9]{1,2}$",
-                "validationMessage": "Enter a CIDR range, for example 10.0.0.0/24."
-              },
-              "visible": "[not(equals(steps('hub').hubFirewallType, 'none'))]"
-            },
-            {
-              "name": "azureFirewallSection",
+              "name": "existingSection",
               "type": "Microsoft.Common.Section",
-              "label": "Azure Firewall",
+              "label": "Existing network",
+              "visible": "[equals(steps('hub').networkMode, 'existing')]",
               "elements": [
                 {
-                  "name": "tierInfo",
-                  "type": "Microsoft.Common.TextBlock",
-                  "visible": true,
-                  "options": {
-                    "text": "The firewall is deployed with a policy carrying Microsoft's documented AVD egress rules, so session hosts work through it without further configuration. Its private IP is read from the resource, so no address needs entering."
+                  "name": "existingSessionHostSubnetId",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Session host subnet ID",
+                  "placeholder": "/subscriptions/.../virtualNetworks/vnet-prod/subnets/snet-desktops",
+                  "toolTip": "Full resource ID of the subnet the session hosts go in.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^$|^/subscriptions/[0-9a-fA-F-]{36}/[rR]esource[gG]roups/[^/]+/providers/Microsoft\\.Network/virtualNetworks/[^/]+/subnets/[^/]+$",
+                    "validationMessage": "Must be a full subnet resource ID."
                   }
                 },
                 {
-                  "name": "azureFirewallTier",
-                  "type": "Microsoft.Common.DropDown",
-                  "label": "Tier",
-                  "defaultValue": "Standard",
-                  "toolTip": "Basic needs a second subnet and public IP, cannot filter by FQDN in network rules, and tops out at 250 Mbps.",
-                  "constraints": {
-                    "required": true,
-                    "allowedValues": [
-                      {
-                        "label": "Standard",
-                        "value": "Standard"
-                      },
-                      {
-                        "label": "Premium",
-                        "value": "Premium"
-                      },
-                      {
-                        "label": "Basic \u2014 250 Mbps, needs a management subnet",
-                        "value": "Basic"
-                      }
-                    ]
-                  },
-                  "visible": true
-                },
-                {
-                  "name": "azureFirewallSubnetPrefix",
+                  "name": "existingPrivateEndpointSubnetId",
                   "type": "Microsoft.Common.TextBox",
-                  "label": "AzureFirewallSubnet prefix",
-                  "defaultValue": "10.0.1.0/26",
-                  "placeholder": "10.0.1.0/26",
-                  "toolTip": "Name is fixed by Azure. /26 or larger \u2014 a /26 is enough at any scale.",
-                  "constraints": {
-                    "required": true,
-                    "regex": "^((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)/(1[0-9]|2[0-6])$",
-                    "validationMessage": "A CIDR range of /26 or larger, for example 10.0.1.0/26."
-                  },
-                  "visible": true
-                },
-                {
-                  "name": "basicNotice",
-                  "type": "Microsoft.Common.InfoBox",
-                  "visible": "[equals(steps('hub').azureFirewallSection.azureFirewallTier, 'Basic')]",
-                  "options": {
-                    "icon": "Warning",
-                    "text": "The Basic tier requires a management NIC in its own AzureFirewallManagementSubnet with a second public IP. That is unconditional, not a forced-tunnelling option. Windows activation also falls back to a broader service tag rule, because Basic cannot filter by hostname in network rules."
-                  }
-                },
-                {
-                  "name": "azureFirewallManagementSubnetPrefix",
-                  "type": "Microsoft.Common.TextBox",
-                  "label": "AzureFirewallManagementSubnet prefix",
-                  "defaultValue": "10.0.1.64/26",
-                  "placeholder": "10.0.1.64/26",
-                  "toolTip": "Basic tier only. Name fixed by Azure, /26 or larger, must not overlap AzureFirewallSubnet.",
+                  "label": "Private endpoint subnet ID",
+                  "placeholder": "Leave empty to skip the private endpoint",
+                  "toolTip": "Where the FSLogix private endpoint lands. May be the same subnet. Empty means the share is reached over its public endpoint.",
                   "constraints": {
                     "required": false,
-                    "regex": "^$|^((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)/(1[0-9]|2[0-6])$",
-                    "validationMessage": "A CIDR range of /26 or larger, or blank on Standard and Premium."
-                  },
-                  "visible": "[equals(steps('hub').azureFirewallSection.azureFirewallTier, 'Basic')]"
+                    "regex": "^$|^/subscriptions/[0-9a-fA-F-]{36}/[rR]esource[gG]roups/[^/]+/providers/Microsoft\\.Network/virtualNetworks/[^/]+/subnets/[^/]+$",
+                    "validationMessage": "Must be a full subnet resource ID, or empty."
+                  }
+                },
+                {
+                  "name": "avdResourceGroupName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "AVD resource group",
+                  "placeholder": "rg-avd",
+                  "toolTip": "Created for the host pool, application group, workspace and session hosts.",
+                  "constraints": {
+                    "required": true
+                  }
                 }
-              ],
-              "visible": "[equals(steps('hub').hubFirewallType, 'azureFirewall')]"
+              ]
+            },
+            {
+              "name": "peerSection",
+              "type": "Microsoft.Common.Section",
+              "label": "Peer to an existing hub (optional)",
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
+              "elements": [
+                {
+                  "name": "peerToExistingHubVnetId",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Hub VNet resource ID",
+                  "placeholder": "Leave empty for no peering",
+                  "toolTip": "Each VNet with Peer to hub set on the Spokes tab is peered to this one. The hub side of the peering can only be created when the hub is in this subscription.",
+                  "constraints": {
+                    "required": false,
+                    "regex": "^$|^/subscriptions/[0-9a-fA-F-]{36}/[rR]esource[gG]roups/[^/]+/providers/Microsoft\\.Network/virtualNetworks/[^/]+$",
+                    "validationMessage": "Must be a full VNet resource ID, or empty."
+                  }
+                }
+              ]
+            },
+            {
+              "name": "egressMode",
+              "type": "Microsoft.Common.OptionsGroup",
+              "label": "Outbound internet",
+              "defaultValue": "NAT gateway \u2014 recommended for AVD",
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
+              "toolTip": "Session hosts reach the AVD service over the internet to register, so a host with no egress never comes up.",
+              "constraints": {
+                "allowedValues": [
+                  {
+                    "label": "NAT gateway \u2014 recommended for AVD",
+                    "value": "natGateway"
+                  },
+                  {
+                    "label": "Route to an existing firewall",
+                    "value": "firewall"
+                  },
+                  {
+                    "label": "Neither \u2014 handled outside this deployment",
+                    "value": "none"
+                  }
+                ],
+                "required": true
+              }
+            },
+            {
+              "name": "natNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').egressMode, 'natGateway'))]",
+              "options": {
+                "icon": "Info",
+                "text": "Set Create NAT gateway to Yes on each VNet that needs it, and Use NAT gateway to Yes on its subnets. A gateway with no subnet attached does nothing. Microsoft recommends this over a firewall for AVD: routing the service traffic through an inspection device costs performance."
+              }
             },
             {
               "name": "firewallSection",
               "type": "Microsoft.Common.Section",
-              "label": "FortiGate subnets",
+              "label": "Existing firewall",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').egressMode, 'firewall'))]",
               "elements": [
                 {
-                  "name": "hubFirewallInternalIp",
+                  "name": "firewallPrivateIp",
                   "type": "Microsoft.Common.TextBox",
-                  "label": "FortiGate internal IP",
-                  "defaultValue": "10.0.32.68",
-                  "toolTip": "Next hop for the spoke route tables. Must sit inside the internal subnet below, at .68 or higher \u2014 Azure reserves the first three usable addresses.",
+                  "label": "Firewall private IP",
+                  "placeholder": "10.0.1.4",
+                  "toolTip": "A route table per VNet sends 0.0.0.0/0 here. The firewall itself is not created.",
                   "constraints": {
                     "required": true,
-                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
-                    "validationMessage": "Enter an IPv4 address, for example 10.0.32.68."
-                  },
-                  "visible": true
-                },
-                {
-                  "name": "fgtExternalPrefix",
-                  "type": "Microsoft.Common.TextBox",
-                  "label": "External subnet",
-                  "defaultValue": "10.0.32.0/26",
-                  "constraints": {
-                    "required": true
-                  },
-                  "visible": true
-                },
-                {
-                  "name": "fgtInternalPrefix",
-                  "type": "Microsoft.Common.TextBox",
-                  "label": "Internal subnet",
-                  "defaultValue": "10.0.32.64/26",
-                  "constraints": {
-                    "required": true
-                  },
-                  "visible": true
-                },
-                {
-                  "name": "fgtHaPrefix",
-                  "type": "Microsoft.Common.TextBox",
-                  "label": "HA subnet",
-                  "defaultValue": "10.0.32.128/29",
-                  "constraints": {
-                    "required": true
-                  },
-                  "visible": true
-                },
-                {
-                  "name": "fgtMgmtPrefix",
-                  "type": "Microsoft.Common.TextBox",
-                  "label": "Management subnet",
-                  "defaultValue": "10.0.32.160/27",
-                  "constraints": {
-                    "required": true
-                  },
-                  "visible": true
+                    "regex": "^$|^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
+                    "validationMessage": "Must be an IPv4 address."
+                  }
                 }
-              ],
-              "visible": "[equals(steps('hub').hubFirewallType, 'fortigate')]"
-            },
-            {
-              "name": "deployBastionSubnet",
-              "type": "Microsoft.Common.CheckBox",
-              "label": "Create AzureBastionSubnet",
-              "toolTip": "Creates the subnet only. No Bastion host is deployed by this template.",
-              "visible": "[not(equals(steps('hub').hubFirewallType, 'none'))]"
-            },
-            {
-              "name": "bastionSubnetPrefix",
-              "type": "Microsoft.Common.TextBox",
-              "label": "AzureBastionSubnet prefix",
-              "defaultValue": "10.0.1.0/26",
-              "toolTip": "Azure requires /26 or larger. Smaller prefixes are rejected.",
-              "constraints": {
-                "required": true,
-                "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/(1[0-9]|2[0-6])$",
-                "validationMessage": "Enter a CIDR range of /26 or larger, for example 10.0.1.0/26."
-              },
-              "visible": "[and(not(equals(steps('hub').hubFirewallType, 'none')), steps('hub').deployBastionSubnet)]"
+              ]
             }
           ]
         },
@@ -564,18 +476,27 @@
             {
               "name": "spokesInfo",
               "type": "Microsoft.Common.TextBlock",
-              "visible": true,
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
               "options": {
-                "text": "Enter a SHORT IDENTIFIER for each spoke, not a full resource name. All resource names are derived from it."
+                "text": "The spoke key links subnets to their parent VNet on the Subnets tab \u2014 it is not a resource name. Name the resource group and the VNet exactly as you want them in the next two columns."
               }
             },
             {
               "name": "namingExample",
               "type": "Microsoft.Common.InfoBox",
-              "visible": true,
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
               "options": {
                 "icon": "Info",
-                "text": "Example: a spoke with the identifier 'avd' creates resource group rg-avd, virtual network vnet-avd, and (with a hub firewall) route table rt-avd. Do NOT type 'vnet-avd' here \u2014 that would produce vnet-vnet-avd. Exactly one spoke should have the AVD role: session hosts and the FSLogix private endpoint land there."
+                "text": "Leave Resource group name or VNet name blank and they fall back to rg-<key> and vnet-<key>. Exactly one spoke should have the AVD role: the session hosts and the FSLogix private endpoint land there."
+              }
+            },
+            {
+              "name": "standaloneNatNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').egressMode, 'natGateway'))]",
+              "options": {
+                "icon": "Warning",
+                "text": "Every VNet that needs outbound internet must have its own NAT gateway \u2014 set Create NAT gateway to Yes here, and Use NAT gateway to Yes on its subnets. Session hosts reach the AVD service over the internet to register, so a host pool in a VNet without egress is skipped rather than built into a state where it can never come up."
               }
             },
             {
@@ -700,7 +621,8 @@
                             "value": false
                           }
                         ]
-                      }
+                      },
+                      "toolTip": "Only has an effect when a hub VNet resource ID was given on the Network tab."
                     }
                   },
                   {
@@ -725,31 +647,27 @@
                         ]
                       }
                     }
-                  },
-                  {
-                    "id": "dnsServers",
-                    "header": "DNS servers (hybrid only)",
-                    "width": "1fr",
-                    "element": {
-                      "name": "dnsServers",
-                      "type": "Microsoft.Common.TextBox",
-                      "placeholder": "10.10.0.4,10.10.0.5",
-                      "constraints": {
-                        "required": false
-                      }
-                    }
                   }
                 ]
               },
-              "visible": true
+              "visible": "[equals(steps('hub').networkMode, 'create')]"
             },
             {
               "name": "natCostNotice",
               "type": "Microsoft.Common.InfoBox",
-              "visible": true,
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
               "options": {
                 "icon": "Warning",
                 "text": "A NAT gateway cannot be shared between virtual networks, so each spoke with one pays for its own gateway and public IP. Not needed when a hub firewall provides outbound access \u2014 and do not use both on the same subnet, because the route table wins and the NAT gateway bills for nothing."
+              }
+            },
+            {
+              "name": "spokesNotUsedNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[equals(steps('hub').networkMode, 'existing')]",
+              "options": {
+                "icon": "Info",
+                "text": "Not used: you chose existing VNets on the Network tab, so nothing on this tab or the Subnets tab is created. The subnets you named there are used as they are."
               }
             }
           ]
@@ -761,18 +679,18 @@
             {
               "name": "subnetsInfo",
               "type": "Microsoft.Common.TextBlock",
-              "visible": true,
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
               "options": {
-                "text": "Each subnet belongs to a spoke. Enter the spoke's identifier exactly as typed on the Spokes tab, then a short identifier for the subnet itself."
+                "text": "One row per subnet. Parent VNet is the Spoke key from the Spokes tab \u2014 it says which VNet the subnet is created in. Everything else describes the subnet itself."
               }
             },
             {
               "name": "subnetNamingExample",
               "type": "Microsoft.Common.InfoBox",
-              "visible": true,
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
               "options": {
                 "icon": "Info",
-                "text": "Example: parent spoke 'avd' with subnet identifier 'hosts' creates subnet snet-avd-hosts, protected by a network security group called nsg-avd-hosts. The parent spoke must match a Spoke identifier exactly, or the subnet is silently not created."
+                "text": "Parent VNet must match a Spoke key exactly. It is not corrected for you, and a row pointing at a spoke that does not exist fails the deployment partway through. The AVD spoke needs one subnet with NSG rules set to 'AVD' \u2014 the session hosts go there \u2014 and one with Private endpoint set to Yes, which is where the FSLogix endpoint lands. The same subnet can do both."
               }
             },
             {
@@ -792,7 +710,7 @@
                 "columns": [
                   {
                     "id": "spoke",
-                    "header": "Parent spoke name (must match Spokes tab)",
+                    "header": "Parent VNet",
                     "width": "1fr",
                     "element": {
                       "type": "Microsoft.Common.TextBox",
@@ -805,16 +723,17 @@
                             "message": "Must exactly match a Spoke identifier from the Spokes tab, for example avd."
                           }
                         ]
-                      }
+                      },
+                      "toolTip": "The Spoke key from the Spokes tab, character for character."
                     }
                   },
                   {
                     "id": "name",
-                    "header": "Subnet key (leave Subnet name blank to derive)",
+                    "header": "Subnet name",
                     "width": "1fr",
                     "element": {
                       "type": "Microsoft.Common.TextBox",
-                      "placeholder": "hosts",
+                      "placeholder": "snet-desktops",
                       "constraints": {
                         "required": true,
                         "validations": [
@@ -823,20 +742,8 @@
                             "message": "Short identifier: lowercase letters, digits and hyphens, 2 to 24 characters. Example: hosts."
                           }
                         ]
-                      }
-                    }
-                  },
-                  {
-                    "id": "subnetName",
-                    "header": "Subnet name",
-                    "width": "1fr",
-                    "element": {
-                      "name": "subnetName",
-                      "type": "Microsoft.Common.TextBox",
-                      "placeholder": "snet-avd-hosts",
-                      "constraints": {
-                        "required": false
-                      }
+                      },
+                      "toolTip": "Named exactly as you type it. Its network security group is called nsg-<this name>."
                     }
                   },
                   {
@@ -905,7 +812,7 @@
                   },
                   {
                     "id": "hostsPrivateEndpoints",
-                    "header": "Hosts private endpoint",
+                    "header": "Private endpoint",
                     "width": "1fr",
                     "element": {
                       "name": "hostsPrivateEndpoints",
@@ -928,15 +835,24 @@
                   }
                 ]
               },
-              "visible": true
+              "visible": "[equals(steps('hub').networkMode, 'create')]"
             },
             {
               "name": "nsgNotice",
               "type": "Microsoft.Common.InfoBox",
-              "visible": true,
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
               "options": {
                 "icon": "Info",
                 "text": "The AVD baseline NSG documents the outbound destinations AVD needs. It does not restrict egress \u2014 Azure's default rules still allow outbound internet. Real egress control needs a firewall or explicit deny rules."
+              }
+            },
+            {
+              "name": "subnetsNotUsedNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[equals(steps('hub').networkMode, 'existing')]",
+              "options": {
+                "icon": "Info",
+                "text": "Not used with existing VNets. The session host and private endpoint subnets come from the Network tab."
               }
             }
           ]
@@ -1772,18 +1688,6 @@
       "location": "[steps('basics').resourceScope.location.name]",
       "parameters": {
         "location": "[steps('basics').resourceScope.location.name]",
-        "hubRgName": "[steps('hub').hubRgName]",
-        "hubVnetName": "[steps('hub').hubVnetName]",
-        "hubAddressPrefix": "[steps('hub').hubAddressPrefix]",
-        "gatewaySubnetPrefix": "[steps('hub').gatewaySubnetPrefix]",
-        "hubFirewallType": "[steps('hub').hubFirewallType]",
-        "hubFirewallInternalIp": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.hubFirewallInternalIp, '')]",
-        "fgtExternalPrefix": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.fgtExternalPrefix, '')]",
-        "fgtInternalPrefix": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.fgtInternalPrefix, '')]",
-        "fgtHaPrefix": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.fgtHaPrefix, '')]",
-        "fgtMgmtPrefix": "[if(equals(steps('hub').hubFirewallType, 'fortigate'), steps('hub').firewallSection.fgtMgmtPrefix, '')]",
-        "deployBastionSubnet": "[steps('hub').deployBastionSubnet]",
-        "bastionSubnetPrefix": "[if(steps('hub').deployBastionSubnet, steps('hub').bastionSubnetPrefix, '')]",
         "spokes": "[steps('spokes').spokes]",
         "subnets": "[steps('subnets').subnets]",
         "deployStorage": "[steps('storage').deployStorage]",
@@ -1809,7 +1713,7 @@
         "createEntraGroups": "[and(not(not(steps('identity').useEntraManagedIdentity)), steps('identity').createEntraGroups)]",
         "avdUsersGroupName": "[steps('identity').groupNames.avdUsersGroupName]",
         "avdAdminsGroupName": "[steps('identity').groupNames.avdAdminsGroupName]",
-        "configureEntraKerberos": "[and(not(not(steps('identity').useEntraManagedIdentity)), steps('identity').configureEntraKerberos)]",
+        "configureEntraKerberos": "[and(steps('identity').useEntraManagedIdentity, steps('identity').configureEntraKerberos)]",
         "setFslogixNtfsPermissions": "[steps('identity').setFslogixNtfsPermissions]",
         "sessionHostImageSku": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.imageSku, 'win11-25h2-avd-m365')]",
         "sessionHostImageOffer": "[if(contains(if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.imageSku, 'win11-25h2-avd-m365'), 'm365'), 'office-365', 'windows-11')]",
@@ -1820,9 +1724,6 @@
         "fslogixProfileSizeMB": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.fslogixProfileSizeMB, 30000)]",
         "restartSessionHostsAfterFslogix": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.restartAfterFslogix, true)]",
         "setDesktopFriendlyNames": "[steps('identity').useEntraManagedIdentity]",
-        "azureFirewallTier": "[if(equals(steps('hub').hubFirewallType, 'azureFirewall'), steps('hub').azureFirewallSection.azureFirewallTier, 'Standard')]",
-        "azureFirewallSubnetPrefix": "[if(equals(steps('hub').hubFirewallType, 'azureFirewall'), steps('hub').azureFirewallSection.azureFirewallSubnetPrefix, '')]",
-        "azureFirewallManagementSubnetPrefix": "[if(and(equals(steps('hub').hubFirewallType, 'azureFirewall'), equals(steps('hub').azureFirewallSection.azureFirewallTier, 'Basic')), steps('hub').azureFirewallSection.azureFirewallManagementSubnetPrefix, '')]",
         "deployAvdInsights": "[if(steps('monitoring').deployMonitoring, steps('monitoring').insightsSection.deployAvdInsights, false)]",
         "collectPerProcessInputDelay": "[if(steps('monitoring').deployMonitoring, steps('monitoring').insightsSection.collectPerProcessInputDelay, false)]",
         "deployAlerts": "[if(steps('monitoring').deployMonitoring, steps('monitoring').insightsSection.deployAlerts, false)]",
@@ -1834,8 +1735,15 @@
         "sessionHostOsDiskSizeGB": "[if(steps('avd').deploySessionHosts, steps('avd').sessionHostSection.osDiskSizeGB, 0)]",
         "identityModel": "[steps('identity').identityModel]",
         "useEntraManagedIdentity": "[steps('identity').useEntraManagedIdentity]",
-        "entraManagedIdentityName": "[steps('identity').identityOverrides.entraManagedIdentityName]",
-        "entraManagedIdentityRgName": "[steps('identity').identityOverrides.entraManagedIdentityRgName]"
+        "hybridDomainControllerReady": "[steps('identity').hybridDomainControllerReady]",
+        "dnsServers": "[coalesce(steps('identity').dnsServers, '')]",
+        "networkMode": "[steps('hub').networkMode]",
+        "existingSessionHostSubnetId": "[if(equals(steps('hub').networkMode,'existing'), coalesce(steps('hub').existingSection.existingSessionHostSubnetId,''), '')]",
+        "existingPrivateEndpointSubnetId": "[if(equals(steps('hub').networkMode,'existing'), coalesce(steps('hub').existingSection.existingPrivateEndpointSubnetId,''), '')]",
+        "avdResourceGroupName": "[if(equals(steps('hub').networkMode,'existing'), coalesce(steps('hub').existingSection.avdResourceGroupName,''), '')]",
+        "peerToExistingHubVnetId": "[if(equals(steps('hub').networkMode,'create'), coalesce(steps('hub').peerSection.peerToExistingHubVnetId,''), '')]",
+        "egressMode": "[if(equals(steps('hub').networkMode,'create'), steps('hub').egressMode, 'none')]",
+        "firewallPrivateIp": "[if(equals(steps('hub').egressMode,'firewall'), coalesce(steps('hub').firewallSection.firewallPrivateIp,''), '')]"
       }
     }
   }
