@@ -4,10 +4,12 @@ A reusable AVD landing zone, deployed from a portal wizard through an Azure
 Template Spec. Spokes, subnets and host pools are arrays and looped over — one
 VNet or five, same code.
 
-It follows Microsoft's own AVD landing zone accelerator on the three decisions
-that shape everything else: **it does not create a hub**, it treats an existing
-VNet as a first-class choice, and it defaults to a NAT gateway rather than a
-firewall for egress. See [Network](#network) for why.
+It follows Microsoft's own AVD landing zone accelerator on the decisions that
+shape everything else: an existing VNet is a first-class choice, a hub is
+something you peer into rather than something a workload builds, and the default
+egress is a NAT gateway rather than a firewall. It will still **create** a hub,
+with a firewall, when you ask it to — for a greenfield customer where nobody
+else is going to. See [Network](#network).
 
 Every publish stamps a build number into the template spec, so you can always
 tell which code is in Azure:
@@ -200,17 +202,24 @@ taken as parameters instead, and the Entra work becomes four manual steps. The
 
 ## Network
 
-This template **does not create a hub**, and that is deliberate rather than a
-gap. A hub carries the customer's gateway, their firewall and — in a hybrid
+A hub carries the customer's gateway, their firewall and — in a hybrid
 environment — their domain controllers. It belongs to whoever runs their
 network, and in Microsoft's enterprise-scale model it lives in a connectivity
-subscription owned by the platform team. An AVD workload peers into it.
-Microsoft's own AVD accelerator works the same way: no hub, optional peering to
-one that exists.
+subscription owned by the platform team. Microsoft's own AVD accelerator never
+creates one; it peers into whatever exists.
 
-Building one meant owning a design that was not ours, and it forced a series of
-special cases — the firewall choice deciding whether a hub existed, then the
-identity model overriding that to get somewhere to put a domain controller.
+This template defaults to that, and will still build a hub when you choose to.
+The difference matters: creating one makes you the owner of part of the
+customer's network design. Right for a greenfield site where nobody else will
+build it, questionable where they already have Azure.
+
+The decision is `hubMode`, and it only applies when creating VNets:
+
+| | |
+|---|---|
+| `none` | No hub. The VNets stand on their own, with no peerings and nothing joining them. |
+| `create` | Built here: gateway subnet, optionally a firewall, an identity subnet for domain controllers, and a Bastion subnet. |
+| `existing` | Peer to one that already exists, named by `peerToExistingHubVnetId`. |
 
 ### Create or use existing VNets
 
@@ -230,17 +239,23 @@ The privatelink DNS zone is linked to whichever VNets those subnets belong to,
 deduplicated — both are often in the same one, and two zone links with the same
 name fail the deployment.
 
-### Peering to an existing hub
+### Peering
 
-Set `peerToExistingHubVnetId` and every VNet with `peerToHub: true` is peered
-to it, in both directions.
+Every VNet with `peerToHub: true` is peered to the hub, in both directions —
+whether that hub was built here or already existed.
 
-Both sides of a peering have to exist, and the hub side lives in the customer's
-own resource group. That is only reachable when the hub is in the same
-subscription — a subscription-scoped template cannot deploy into another. When
-it is elsewhere, only the spoke side is created and
+Both sides of a peering have to exist, and for an existing hub the other side
+lives in the customer's own resource group. That is only reachable when the hub
+is in the same subscription, since a subscription-scoped template cannot deploy
+into another. When it is elsewhere, only the spoke side is created and
 `hubSidePeeringNotCreated` says so. **Neither side carries traffic until their
-network team adds the matching peering.**
+network team adds the matching peering.** A hub built here is always in this
+subscription, so both sides are created.
+
+Peerings are created with `allowForwardedTraffic` on both sides. Without it,
+traffic the hub's firewall forwards between spokes is dropped at the peering
+rather than reaching its destination, and the symptom is a route that silently
+fails rather than an error.
 
 ### Outbound internet
 
@@ -256,6 +271,10 @@ comes up.
 | `natGateway` | A NAT gateway per VNet that asks for one. The default. |
 | `firewall` | A default route to a firewall that **already exists**, by its private IP. Route tables are created and attached; the firewall is not. |
 | `none` | Neither. Correct only when the subnets are not private, or something outside this deployment provides egress. |
+
+**A firewall in a hub you created overrides this.** Set `hubFirewallType` and
+every created VNet routes through it — there is no sense in building one and
+then routing around it.
 
 **NAT gateway is Microsoft's recommendation for AVD.** Their wording: it
 "mitigates performance effects of routing AVD service traffic through
@@ -306,6 +325,8 @@ main.bicep                      subscription-scoped entry point
 parameters.example.bicepparam   copy per customer
 uiFormDefinition.json           the portal wizard
 modules/
+  hub.bicep                     hub VNet and its optional subnets
+  azureFirewall.bicep           firewall, policy and AVD egress rules
   spoke.bicep                   one VNet and its subnets
   peering.bicep                 one peering, used twice per peered VNet
   nsg.bicep                     AVD or empty NSG
@@ -373,19 +394,59 @@ subnet. If there is no such subnet they are skipped, and
 
 ## Firewalls
 
-This template does not deploy a firewall, and no longer builds FortiGate or
-Azure Firewall subnets. Set `egressMode` to `firewall` and give
-`firewallPrivateIp`, and each created VNet gets a route table sending
-`0.0.0.0/0` and the RFC1918 ranges to it.
+Two ways to have one, and one way not to.
 
-If a customer needs a firewall built, that is a platform deployment rather than
-part of an AVD landing zone — it belongs with their hub, and with whoever owns
-it.
+**A firewall that already exists.** Set `egressMode` to `firewall` and give
+`firewallPrivateIp`. Each created VNet gets a route table sending `0.0.0.0/0`
+and the RFC1918 ranges to it. Nothing is deployed.
 
-Note that peerings to an existing hub are created with `allowForwardedTraffic`
-on both sides. Without it, traffic the hub's firewall forwards between spokes
-is dropped at the peering rather than reaching its destination, and the symptom
-is a route that silently fails rather than an error.
+**A firewall in a hub built here.** Set `hubMode` to `create` and
+`hubFirewallType`:
+
+| | `azureFirewall` | `fortigate` |
+|---|---|---|
+| Hub subnets | `AzureFirewallSubnet`, plus `AzureFirewallManagementSubnet` on Basic | four FortiGate NIC subnets |
+| The appliance | deployed, with an AVD egress policy | yours to deploy |
+| IP for the routes | read from the resource | `hubFirewallInternalIp`, by hand |
+
+Reading the IP from the resource removes a whole class of transcription error,
+which is the main reason to prefer Azure Firewall where there is a choice.
+
+### The Azure Firewall policy
+
+It carries Microsoft's documented AVD egress rules, so session hosts work
+through it without further configuration: the `WindowsVirtualDesktop` FQDN tag,
+service tags for the control plane and platform, RDP Shortpath STUN on UDP
+3478, Windows activation on 1688, the Entra join and sign-in endpoints, the
+certificate endpoints, and the Azure Monitor Agent control endpoints.
+
+Three are worth knowing about, because each fails quietly if omitted:
+
+- **Six certificate endpoints are HTTP on port 80**, not HTTPS. An HTTPS-only
+  rule set breaks attestation certificate provisioning.
+- **`pas.windows.net` is not in the AVD required-URL list** and is not reliably
+  covered by the `AzureActiveDirectory` service tag. Without it the host joins
+  Entra ID and then nobody can sign in to it.
+- **Windows activation uses a service tag, not a hostname.** FQDN filtering in
+  a network rule needs DNS proxy and is unavailable on Basic, and port 1688
+  cannot go in an application rule at all since those are HTTP and HTTPS only.
+
+Ordering is handled: the firewall depends on its rule collection group, and the
+route tables depend on the firewall. Session hosts Entra join at first boot, and
+a default route pointing at a firewall with no rules yet fails that join
+silently.
+
+**The Basic tier is not a cheaper Standard.** It requires a management NIC in
+its own `AzureFirewallManagementSubnet` with a second public IP — unconditional,
+not a forced-tunnelling option — and tops out at 250 Mbps, which is a real
+ceiling for a pooled estate.
+
+Stopping and starting a firewall can change its private IP. If you deallocate
+one to save money, redeploy afterwards so the routes are refreshed.
+
+**Microsoft still recommends a NAT gateway for AVD egress**, whichever of these
+you build. A firewall is for inspecting traffic you care about, not for getting
+session hosts to the AVD service.
 
 ## Session hosts
 
@@ -615,9 +676,13 @@ containers mounting over Entra Kerberos.
 
 - the `hybrid` identity model
 - `networkMode: existing`
-- peering to an existing hub
+- `hubMode: existing` — peering to a hub that already exists
 - `egressMode: firewall`
+- the FortiGate hub path
 - more than one host pool
+
+Previously deployed and expected to still work, but not since the hub was
+reworked: `hubMode: create` with Azure Firewall, and the Bastion subnet.
 
 **Known not working:** ten performance counters are in the deployed data
 collection rule, pass `Get-Counter` on a host, and never reach the workspace —
@@ -726,6 +791,7 @@ Keep the identity and template spec resource groups; everything else goes:
 
 ```
 az group delete --name rg-avd --yes --no-wait
+az group delete --name rg-hub --yes --no-wait      # only if one was created
 az group delete --name rg-storage --yes --no-wait
 az group delete --name rg-mgmt --yes --no-wait
 ```
@@ -750,6 +816,10 @@ so read them on the deployment's Outputs blade once it finishes.
 | `duplicateSessionHostPrefixes` | Two host pools produce the same VM name prefix. Set `vmNamePrefix` on one. |
 | `entraWorkSkippedNoIdentity` | Entra work was requested but no managed identity was supplied, so groups, consent and the manifest tag were all skipped. |
 | `fslogixNtfsPermissionsSkipped` | NTFS permissions could not be set — no session host to run from, or no users group. Until they are, every user can read every other user's profile. |
+| `bastionPrefixValid` | `false` when `bastionSubnetPrefix` is smaller than `/26`, which Azure rejects. |
+| `azureFirewallPrefixValid` | `false` when `AzureFirewallSubnet` is smaller than `/26`. |
+| `azureFirewallMgmtPrefixValid` | `false` when `AzureFirewallManagementSubnet` is smaller than `/26`. Basic tier only. |
+| `hybridNoIdentitySubnet` | A hub was created for a hybrid deployment but given no identity subnet, so there is nowhere for a domain controller. |
 | `sessionHostsSkippedNoOutbound` | The VNet carrying session hosts has no NAT gateway and no firewall route, so they were not created. They could never have registered. |
 | `subnetsWithUnknownSpoke` | A subnet's parent VNet key matches no row on the Spokes tab. The deployment fails partway through without this. |
 | `hubSidePeeringNotCreated` | A hub VNet was given but it is in another subscription, so only the spoke side of each peering exists. Neither side carries traffic until their network team adds the other. |
@@ -759,8 +829,8 @@ so read them on the deployment's Outputs blade once it finishes.
 | `insightsSkippedNoWorkspace` | Insights requested but monitoring is off, so the agent was not installed. |
 | `storageHardeningRequired` | Storage is still in its bootstrap posture — shared key access on, or the public endpoint open. |
 
-Everything should be empty or false, apart from the two that report a
-deliberate hybrid state.
+Everything should be empty or false, apart from the three `...Valid` outputs,
+which should be true, and the two that report a deliberate hybrid state.
 
 **These are deployment outputs, not what-if output.** What-if reports resource
 changes only; outputs are evaluated during a real deployment. They save
@@ -781,7 +851,7 @@ with validation, dropdowns and grids instead of hand-edited arrays.
 |---|---|
 | Basics | Subscription, region and tags |
 | Identity | Entra only or hybrid, the bootstrap identity, groups, Kerberos, NTFS |
-| Network | Create or use existing VNets, peering to an existing hub, outbound internet |
+| Network | Create or use existing VNets, the hub, its firewall, and outbound internet |
 | Spokes | A grid — one row per VNet. Hidden when using existing VNets. |
 | Subnets | A grid — one row per subnet. Hidden when using existing VNets. |
 | Storage | FSLogix account and private endpoint, or off |
@@ -813,9 +883,9 @@ parameters file directly.
 
 ## Known limitations
 
-- Does not create a hub, or consume an existing Log Analytics workspace or
-  private DNS zone. `networkMode: existing` covers an existing network; the
-  rest is still created.
+- Does not consume an existing Log Analytics workspace or private DNS zone.
+  `networkMode: existing` covers an existing network; the rest is still
+  created.
 - Under `hybrid`, session hosts are never created and NTFS permissions on the
   share are never set. Both are left to whatever process runs once a domain
   controller exists.
@@ -825,9 +895,11 @@ parameters file directly.
   open issue with no committed date.
 - Excluding the storage application from MFA Conditional Access is always
   manual.
-- No firewall is deployed. `egressMode: firewall` routes to one that already
-  exists; building one is a platform deployment, not part of an AVD landing
-  zone.
+- FortiGate is subnets only — the appliance, its licensing and its HA pairing
+  are yours. Azure Firewall is the path deployed end to end.
+- A hub is only created in the subscription being deployed into. A customer
+  whose hub belongs in a separate connectivity subscription needs
+  `hubMode: existing`.
 - The AVD NSG rules are **informational service-tag rules, not a complete AVD
   allowlist**. They do not contain everything Microsoft currently documents —
   UDP 3478 and several platform endpoints are absent — and they restrict

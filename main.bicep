@@ -100,6 +100,99 @@ in this same subscription; otherwise their network team adds it and
 hubSidePeeringNotCreated says so.''')
 param peerToExistingHubVnetId string = ''
 
+@description('''Whether there is a hub, and where it comes from. Only applies when
+networkMode is create.
+
+  none      No hub. The VNets stand on their own, with no peerings and nothing joining
+            them. Correct when AVD is the only thing in the subscription.
+  create    Build one here, with a gateway subnet and optionally a firewall, a subnet
+            for domain controllers and a Bastion subnet. For a greenfield customer where
+            nobody else is going to build it.
+  existing  Peer to a hub that already exists, named by peerToExistingHubVnetId. The
+            normal case for a customer who already has Azure: the hub belongs to their
+            platform team.
+
+Microsoft's own accelerator only does the third — a hub carries the customer's gateway,
+firewall and domain controllers, and an AVD workload peers into it. Creating one here
+means owning a piece of their network design, so it is a deliberate choice rather than
+the default.''')
+@allowed([
+  'none'
+  'create'
+  'existing'
+])
+param hubMode string = 'none'
+
+//
+// HUB — only used when hubMode is create
+//
+param hubRgName string = 'rg-hub'
+param hubVnetName string = 'vnet-hub'
+param hubAddressPrefix string = '10.0.0.0/16'
+
+@description('GatewaySubnet. The name is fixed by Azure. Created whether or not a gateway is deployed, because adding it later means resizing the VNet.')
+param gatewaySubnetPrefix string = '10.0.0.0/27'
+
+@description('''Subnet in the hub for domain controllers and other shared identity
+infrastructure. Empty creates nothing.
+
+A hybrid deployment needs this: the landing zone is built first, a domain controller is
+added to the hub afterwards, and the session hosts come later still.''')
+param identitySubnetPrefix string = ''
+
+@description('Name of the identity subnet, as you want it.')
+param identitySubnetName string = 'snet-identity'
+
+@description('Create AzureBastionSubnet in the hub. The subnet only — no Bastion host is deployed.')
+param deployBastionSubnet bool = false
+
+@description('Prefix for AzureBastionSubnet. Azure requires /26 or larger.')
+param bastionSubnetPrefix string = ''
+
+@description('''Firewall in the created hub.
+
+  none           No firewall. Egress is whatever egressMode says.
+  azureFirewall  Deployed here, with a policy carrying the documented AVD egress rules.
+                 Its private IP is read from the resource, so there is nothing to
+                 transcribe.
+  fortigate      The NIC subnets only. The appliance, its licensing and its HA pairing
+                 are yours, and hubFirewallInternalIp has to be supplied by hand.
+
+Selecting one makes it the egress path for every created VNet, overriding egressMode.''')
+@allowed([
+  'none'
+  'azureFirewall'
+  'fortigate'
+])
+param hubFirewallType string = 'none'
+
+@description('Internal IP of the FortiGate appliance. Required when hubFirewallType is fortigate — the template does not deploy the appliance and cannot discover it.')
+param hubFirewallInternalIp string = ''
+
+param fgtExternalPrefix string = ''
+param fgtInternalPrefix string = ''
+param fgtHaPrefix string = ''
+param fgtMgmtPrefix string = ''
+
+@description('Prefix for AzureFirewallSubnet. The name is fixed by Azure and /26 is the minimum.')
+param azureFirewallSubnetPrefix string = ''
+
+@description('''Prefix for AzureFirewallManagementSubnet. Required on the Basic tier,
+which needs a management NIC and a second public IP unconditionally — not as a
+forced-tunnelling option.''')
+param azureFirewallManagementSubnetPrefix string = ''
+
+@allowed([
+  'Basic'
+  'Standard'
+  'Premium'
+])
+@description('Basic tops out at 250 Mbps and needs the management subnet. Standard is the default for good reason.')
+param azureFirewallTier string = 'Standard'
+
+@description('Availability zones for the firewall and its public IP. Empty is regional.')
+param azureFirewallZones array = []
+
 @description('''How VMs in the created VNets reach the internet.
 
   natGateway  A NAT gateway per VNet that asks for one, on the Spokes tab. Microsoft's
@@ -569,14 +662,41 @@ var allTags = union(tags, toObject(namedTagPairs, pair => pair.name, pair => pai
 
 var isCreateNetwork = networkMode == 'create'
 
-// Route tables are created only when there is an address to point them at. An
-// egressMode of firewall with no IP would produce a default route to nowhere,
-// which blackholes the subnet.
-var routeViaFirewall = egressMode == 'firewall' && !empty(trim(firewallPrivateIp))
+var createHub = isCreateNetwork && hubMode == 'create'
+var hubHasFirewall = createHub && hubFirewallType != 'none'
+var deployAzureFirewall = hubHasFirewall && hubFirewallType == 'azureFirewall'
 
-// Peering happens only to a hub that already exists, and only for VNets this
-// deployment created. There is nothing to peer in existing mode.
-var peerToHub = isCreateNetwork && !empty(trim(peerToExistingHubVnetId))
+// A firewall in the hub we just built IS the egress path, whatever egressMode
+// says — there is no sense in building one and then routing around it.
+//
+// Route tables are otherwise created only when there is an address to point
+// them at: an egressMode of firewall with no IP would produce a default route
+// to nowhere, which blackholes the subnet.
+var routeViaFirewall = hubHasFirewall || (egressMode == 'firewall' && !empty(trim(firewallPrivateIp)))
+
+// With Azure Firewall the private IP is read from the resource, which removes a
+// whole class of transcription error. FortiGate cannot be: the template does
+// not deploy the appliance.
+var firewallInternalIp = deployAzureFirewall
+  ? azureFirewall!.outputs.privateIp
+  : (hubHasFirewall ? hubFirewallInternalIp : trim(firewallPrivateIp))
+
+// Everything that may egress through the firewall. The created VNets only —
+// the hub's own subnets do not route through it.
+var spokeAddressPrefixes = [for spoke in spokes: spoke.addressPrefix]
+
+// Peering: to the hub we just built, or to one that already exists.
+var peerToHub = isCreateNetwork && (createHub || (hubMode == 'existing' && !empty(trim(peerToExistingHubVnetId))))
+
+var hubRgForPeering = createHub ? hubRgName : (peerToHub ? split(trim(peerToExistingHubVnetId), '/')[4] : '')
+var hubVnetNameForPeering = createHub ? hubVnetName : lastSegment(peerToExistingHubVnetId)
+var hubVnetIdForPeering = createHub
+  ? resourceId(subscription().subscriptionId, hubRgName, 'Microsoft.Network/virtualNetworks', hubVnetName)
+  : trim(peerToExistingHubVnetId)
+
+// A hub we built is in this subscription by definition. One that already exists
+// may not be, and a subscription-scoped template cannot deploy into another.
+var canPeerHubSide = createHub || (peerToHub && split(trim(peerToExistingHubVnetId), '/')[2] == subscription().subscriptionId)
 
 // A subnet ID is
 //   /subscriptions/../resourceGroups/../providers/Microsoft.Network/virtualNetworks/<v>/subnets/<s>
@@ -687,11 +807,11 @@ var spokeVnetLinks = [
   }
 ]
 
-// The existing hub, when peering to one: its VMs need to resolve the share too.
+// The hub, whether built or already there: its VMs need to resolve the share too.
 var hubVnetLink = peerToHub ? [
   {
-    name: lastSegment(peerToExistingHubVnetId)
-    id: trim(peerToExistingHubVnetId)
+    name: hubVnetNameForPeering
+    id: hubVnetIdForPeering
   }
 ] : []
 
@@ -719,7 +839,8 @@ var dnsLinkedVnets = isCreateNetwork ? concat(hubVnetLink, spokeVnetLinks) : exi
 var sharedRgNames = union(
   deployStorage ? [storageRgName] : [],
   deployMonitoring ? [monitoringRgName] : [],
-  isCreateNetwork || empty(avdRgName) ? [] : [avdRgName]
+  isCreateNetwork || empty(avdRgName) ? [] : [avdRgName],
+  createHub ? [hubRgName] : []
 )
 var spokeNames = [for spoke in spokes: spoke.name]
 
@@ -913,12 +1034,72 @@ resource spokeRgs 'Microsoft.Resources/resourceGroups@2024-03-01' = [
   }
 ]
 
+resource hubRg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (createHub) {
+  name: hubRgName
+  location: location
+  tags: allTags
+}
+
 // In existing mode the network is somebody else's, but the AVD resources still
 // need a home of their own.
 resource avdRg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (!isCreateNetwork && !empty(avdRgName)) {
   name: avdRgName
   location: location
   tags: allTags
+}
+
+//
+// HUB VNET — only when hubMode is create
+//
+module hub 'modules/hub.bicep' = if (createHub) {
+  name: 'hub'
+  scope: hubRg
+  params: {
+    tags: allTags
+    location: location
+    vnetName: hubVnetName
+    addressPrefix: hubAddressPrefix
+    gatewaySubnetPrefix: gatewaySubnetPrefix
+    firewallType: hubFirewallType
+    fgtExternalPrefix: fgtExternalPrefix
+    fgtInternalPrefix: fgtInternalPrefix
+    fgtHaPrefix: fgtHaPrefix
+    fgtMgmtPrefix: fgtMgmtPrefix
+    deployBastionSubnet: deployBastionSubnet
+    bastionSubnetPrefix: bastionSubnetPrefix
+    azureFirewallSubnetPrefix: azureFirewallSubnetPrefix
+    azureFirewallManagementSubnetPrefix: azureFirewallManagementSubnetPrefix
+    azureFirewallTier: azureFirewallTier
+    identitySubnetName: identitySubnetName
+    identitySubnetPrefix: identitySubnetPrefix
+  }
+}
+
+//
+// AZURE FIREWALL
+//
+// Ordering matters: the firewall depends on its rule collection group, and the
+// route tables depend on the firewall. Session hosts Entra join at first boot,
+// and a default route pointing at a firewall with no rules yet fails that join
+// silently.
+//
+module azureFirewall 'modules/azureFirewall.bicep' = if (deployAzureFirewall) {
+  name: 'azureFirewall'
+  scope: hubRg
+  // No dependsOn: reading hub.outputs.vnetId below already orders this after
+  // the hub, and the linter rejects saying it twice.
+  params: {
+    tags: allTags
+    location: location
+    firewallName: 'afw-hub'
+    policyName: 'afwp-hub'
+    tier: azureFirewallTier
+    hubVnetId: hub!.outputs.vnetId
+    allowedSourceAddresses: spokeAddressPrefixes
+    logAnalyticsWorkspaceId: deployMonitoring ? logAnalytics!.outputs.workspaceId : ''
+    availabilityZones: azureFirewallZones
+    allowIntuneEnrolment: sessionHostEnrolWithIntune
+  }
 }
 
 //
@@ -954,7 +1135,7 @@ module routeTables 'modules/routeTable.bicep' = [
       tags: allTags
       location: location
       routeTableName: 'rt-${spoke.name}'
-      firewallInternalIp: trim(firewallPrivateIp)
+      firewallInternalIp: firewallInternalIp
     }
   }
 ]
@@ -1055,20 +1236,19 @@ module spokeVnets 'modules/spoke.bicep' = [
 //
 // Both sides of a peering have to be created, and the hub side lives in the
 // customer's own resource group. That is reachable only when the hub is in the
-// same subscription as this deployment — a subscription-scoped template cannot
-// deploy into another subscription. When it is elsewhere, only the spoke side
-// is created and hubSidePeeringNotCreated says so: until their network team
-// adds the matching peering, neither side carries traffic.
-var hubVnetSubscriptionId = peerToHub ? split(trim(peerToExistingHubVnetId), '/')[2] : ''
-var hubVnetRgName = peerToHub ? split(trim(peerToExistingHubVnetId), '/')[4] : ''
-var canPeerHubSide = peerToHub && hubVnetSubscriptionId == subscription().subscriptionId
-
+// same subscription as this deployment. A hub we built ourselves always is; one
+// that already exists may not be, and then only the spoke side is created and
+// hubSidePeeringNotCreated says so — until their network team adds the matching
+// peering, neither side carries traffic.
 module hubToSpoke 'modules/peering.bicep' = [
   for (spoke, i) in spokes: if (canPeerHubSide && (spoke.?peerToHub ?? false)) {
     name: 'peer-hub-to-${spoke.name}'
-    scope: resourceGroup(hubVnetRgName)
+    scope: resourceGroup(hubRgForPeering)
+    dependsOn: [
+      hub
+    ]
     params: {
-      localVnetName: lastSegment(peerToExistingHubVnetId)
+      localVnetName: hubVnetNameForPeering
       remoteVnetId: spokeVnets[i]!.outputs.vnetId
       peeringName: 'hub-to-${spoke.name}'
       allowForwardedTraffic: true
@@ -1084,7 +1264,7 @@ module spokeToHub 'modules/peering.bicep' = [
     scope: resourceGroup(spokeRgByName[spoke.name])
     params: {
       localVnetName: spokeVnets[i]!.outputs.vnetName
-      remoteVnetId: trim(peerToExistingHubVnetId)
+      remoteVnetId: hubVnetIdForPeering
       peeringName: '${spoke.name}-to-hub'
       // The hub may carry a firewall or a gateway; traffic forwarded from it is
       // dropped without this, and the symptom is a route that silently fails
@@ -1481,11 +1661,44 @@ output createdVnetIds array = [for (spoke, i) in spokes: isCreateNetwork ? spoke
 @description('The network mode this deployment used.')
 output networkModeUsed string = networkMode
 
+@description('Resource ID of the hub VNet, when one was created. Empty otherwise.')
+output hubVnetId string = createHub ? hub!.outputs.vnetId : ''
+
+@description('Resource ID of the hub identity subnet, to build a domain controller into. Empty when none was created.')
+output identitySubnetId string = createHub ? hub!.outputs.identitySubnetId : ''
+
+@description('False when bastionSubnetPrefix is smaller than /26, which Azure rejects.')
+output bastionPrefixValid bool = createHub ? hub!.outputs.bastionPrefixValid : true
+
+@description('False when AzureFirewallSubnet is smaller than /26, which Azure rejects.')
+output azureFirewallPrefixValid bool = createHub ? hub!.outputs.azureFirewallPrefixValid : true
+
+@description('False when AzureFirewallManagementSubnet is smaller than /26. Basic tier only.')
+output azureFirewallMgmtPrefixValid bool = createHub ? hub!.outputs.azureFirewallMgmtPrefixValid : true
+
+@description('Private IP of the Azure Firewall, which the route tables point at. Empty when none was deployed.')
+output azureFirewallPrivateIp string = deployAzureFirewall ? azureFirewall!.outputs.privateIp : ''
+
+@description('Public IP of the Azure Firewall — the address traffic egresses from.')
+output azureFirewallPublicIp string = deployAzureFirewall ? azureFirewall!.outputs.publicIp : ''
+
+@description('''True when hubMode is create and identityModel is hybrid but no identity
+subnet prefix was given, so the hub has nowhere for a domain controller to go. The rest
+of the landing zone is still correct.''')
+output hybridNoIdentitySubnet bool = createHub && !isEntraOnly && empty(trim(identitySubnetPrefix))
+
 @description('''True when a hub VNet was given to peer to but it is in another
 subscription, so only the spoke side of each peering was created. Both sides must exist
 before traffic flows: their network team adds the matching peering on the hub, or this
 template is deployed into their subscription instead.''')
 output hubSidePeeringNotCreated bool = peerToHub && !canPeerHubSide
+
+@description('''True when session hosts were skipped because the VNet they would land
+in has no outbound internet path — no NAT gateway attached to any of its subnets, and no
+route to a firewall. They were not created rather than built into a state where they can
+never reach the AVD service to register. Give the VNet a NAT gateway, set useNatGateway
+on the session host subnet, and redeploy.''')
+output sessionHostsSkippedNoOutbound bool = deploySessionHosts && isEntraOnly && hasSessionHostSubnet && !avdSpokeHasOutbound
 
 @description('''Spokes with no outbound internet path — no hub firewall route and no
 NAT gateway attached to any of their subnets. Empty is what you want. A non-empty

@@ -343,15 +343,6 @@
               "visible": true
             },
             {
-              "name": "noHubNotice",
-              "type": "Microsoft.Common.InfoBox",
-              "visible": true,
-              "options": {
-                "icon": "Info",
-                "text": "This template does not create a hub. A hub carries the customer's gateway, firewall and domain controllers and belongs to whoever runs their network \u2014 an AVD workload peers into it. Give an existing hub below to peer the created VNets to it."
-              }
-            },
-            {
               "name": "existingSection",
               "type": "Microsoft.Common.Section",
               "label": "Existing network",
@@ -394,10 +385,283 @@
               ]
             },
             {
+              "name": "hubMode",
+              "type": "Microsoft.Common.OptionsGroup",
+              "label": "Hub",
+              "defaultValue": "No hub",
+              "visible": "[equals(steps('hub').networkMode, 'create')]",
+              "toolTip": "A hub carries the gateway, the firewall and any domain controllers. Microsoft's model is to peer into one the customer already has; creating one is for a greenfield site where nobody else will.",
+              "constraints": {
+                "allowedValues": [
+                  {
+                    "label": "No hub",
+                    "value": "none"
+                  },
+                  {
+                    "label": "Create a hub",
+                    "value": "create"
+                  },
+                  {
+                    "label": "Peer to an existing hub",
+                    "value": "existing"
+                  }
+                ],
+                "required": true
+              }
+            },
+            {
+              "name": "hubOwnershipNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').hubMode, 'create'))]",
+              "options": {
+                "icon": "Warning",
+                "text": "Microsoft's model is to peer into a hub the customer already has: a hub carries their gateway, firewall and domain controllers, and belongs to whoever runs their network. Creating one here means owning a piece of that design. Correct for a greenfield site where nobody else will build it; think twice where they already have Azure."
+              }
+            },
+            {
+              "name": "hubSection",
+              "type": "Microsoft.Common.Section",
+              "label": "New hub",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').hubMode, 'create'))]",
+              "elements": [
+                {
+                  "name": "hubRgName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Resource group name",
+                  "defaultValue": "rg-hub",
+                  "toolTip": "Named exactly as you type it.",
+                  "constraints": {
+                    "required": true
+                  }
+                },
+                {
+                  "name": "hubVnetName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "VNet name",
+                  "defaultValue": "vnet-hub",
+                  "toolTip": "Named exactly as you type it.",
+                  "constraints": {
+                    "required": true
+                  }
+                },
+                {
+                  "name": "hubAddressPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Address space",
+                  "defaultValue": "10.0.0.0/16",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range, such as 10.0.0.0/16."
+                  }
+                },
+                {
+                  "name": "gatewaySubnetPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "GatewaySubnet prefix",
+                  "defaultValue": "10.0.0.0/27",
+                  "toolTip": "Created whether or not a gateway is deployed \u2014 adding it later means resizing the VNet.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range."
+                  }
+                },
+                {
+                  "name": "identitySubnetName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Identity subnet name",
+                  "defaultValue": "snet-identity",
+                  "toolTip": "For domain controllers. Named exactly as you type it.",
+                  "constraints": {
+                    "required": false
+                  }
+                },
+                {
+                  "name": "identitySubnetPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Identity subnet prefix",
+                  "placeholder": "Leave empty to create none",
+                  "toolTip": "A hybrid deployment needs this: the domain controller is built into it after the landing zone.",
+                  "constraints": {
+                    "required": false,
+                    "regex": "^$|([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range, or leave empty."
+                  }
+                }
+              ]
+            },
+            {
+              "name": "hubFirewallType",
+              "type": "Microsoft.Common.OptionsGroup",
+              "label": "Hub firewall",
+              "defaultValue": "None",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').hubMode, 'create'))]",
+              "toolTip": "Selecting one makes it the egress path for every created VNet, overriding the outbound choice below.",
+              "constraints": {
+                "allowedValues": [
+                  {
+                    "label": "None",
+                    "value": "none"
+                  },
+                  {
+                    "label": "Azure Firewall \u2014 deployed with AVD egress rules",
+                    "value": "azureFirewall"
+                  },
+                  {
+                    "label": "FortiGate \u2014 subnets only, appliance deployed separately",
+                    "value": "fortigate"
+                  }
+                ],
+                "required": true
+              }
+            },
+            {
+              "name": "azureFirewallSection",
+              "type": "Microsoft.Common.Section",
+              "label": "Azure Firewall",
+              "visible": "[and(and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').hubMode, 'create')), equals(steps('hub').hubFirewallType, 'azureFirewall'))]",
+              "elements": [
+                {
+                  "name": "azureFirewallTier",
+                  "type": "Microsoft.Common.DropDown",
+                  "label": "Tier",
+                  "defaultValue": "Standard",
+                  "toolTip": "Basic tops out at 250 Mbps and needs a management subnet with a second public IP, unconditionally.",
+                  "constraints": {
+                    "allowedValues": [
+                      {
+                        "label": "Standard",
+                        "value": "Standard"
+                      },
+                      {
+                        "label": "Premium",
+                        "value": "Premium"
+                      },
+                      {
+                        "label": "Basic",
+                        "value": "Basic"
+                      }
+                    ],
+                    "required": true
+                  }
+                },
+                {
+                  "name": "azureFirewallSubnetPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "AzureFirewallSubnet prefix",
+                  "defaultValue": "10.0.1.0/26",
+                  "toolTip": "/26 minimum. The name is fixed by Azure.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range of /26 or larger."
+                  }
+                },
+                {
+                  "name": "azureFirewallManagementSubnetPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "AzureFirewallManagementSubnet prefix",
+                  "placeholder": "Required on Basic",
+                  "toolTip": "Basic needs a management NIC in its own subnet with a second public IP.",
+                  "constraints": {
+                    "required": false,
+                    "regex": "^$|([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range, or leave empty."
+                  }
+                }
+              ]
+            },
+            {
+              "name": "fortigateSection",
+              "type": "Microsoft.Common.Section",
+              "label": "FortiGate subnets",
+              "visible": "[and(and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').hubMode, 'create')), equals(steps('hub').hubFirewallType, 'fortigate'))]",
+              "elements": [
+                {
+                  "name": "hubFirewallInternalIp",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Appliance internal IP",
+                  "placeholder": "10.0.32.68",
+                  "toolTip": "The template does not deploy the appliance and cannot discover this. Route tables point here.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
+                    "validationMessage": "Enter an IPv4 address."
+                  }
+                },
+                {
+                  "name": "fgtExternalPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "External subnet",
+                  "placeholder": "10.0.32.0/26",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range."
+                  }
+                },
+                {
+                  "name": "fgtInternalPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Internal subnet",
+                  "placeholder": "10.0.32.64/26",
+                  "toolTip": "The appliance's internal IP must sit inside this range.",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range."
+                  }
+                },
+                {
+                  "name": "fgtHaPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "HA subnet",
+                  "placeholder": "10.0.32.128/29",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range."
+                  }
+                },
+                {
+                  "name": "fgtMgmtPrefix",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Management subnet",
+                  "placeholder": "10.0.32.160/27",
+                  "constraints": {
+                    "required": true,
+                    "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                    "validationMessage": "Enter a CIDR range."
+                  }
+                }
+              ]
+            },
+            {
+              "name": "deployBastionSubnet",
+              "type": "Microsoft.Common.CheckBox",
+              "label": "Create AzureBastionSubnet",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').hubMode, 'create'))]",
+              "toolTip": "The subnet only. No Bastion host is deployed by this template."
+            },
+            {
+              "name": "bastionSubnetPrefix",
+              "type": "Microsoft.Common.TextBox",
+              "label": "AzureBastionSubnet prefix",
+              "placeholder": "10.0.2.0/26",
+              "toolTip": "/26 minimum \u2014 Azure rejects anything smaller.",
+              "constraints": {
+                "required": false,
+                "regex": "^$|([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
+                "validationMessage": "Enter a CIDR range of /26 or larger, or leave empty."
+              },
+              "visible": "[and(and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').hubMode, 'create')), steps('hub').deployBastionSubnet)]"
+            },
+            {
               "name": "peerSection",
               "type": "Microsoft.Common.Section",
-              "label": "Peer to an existing hub (optional)",
-              "visible": "[equals(steps('hub').networkMode, 'create')]",
+              "label": "Existing hub",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), equals(steps('hub').hubMode, 'existing'))]",
               "elements": [
                 {
                   "name": "peerToExistingHubVnetId",
@@ -418,7 +682,7 @@
               "type": "Microsoft.Common.OptionsGroup",
               "label": "Outbound internet",
               "defaultValue": "NAT gateway \u2014 recommended for AVD",
-              "visible": "[equals(steps('hub').networkMode, 'create')]",
+              "visible": "[and(equals(steps('hub').networkMode, 'create'), not(and(equals(steps('hub').hubMode, 'create'), not(equals(steps('hub').hubFirewallType, 'none')))))]",
               "toolTip": "Session hosts reach the AVD service over the internet to register, so a host with no egress never comes up.",
               "constraints": {
                 "allowedValues": [
@@ -622,7 +886,7 @@
                           }
                         ]
                       },
-                      "toolTip": "Only has an effect when a hub VNet resource ID was given on the Network tab."
+                      "toolTip": "Only has an effect when a hub is created or an existing one is given on the Network tab."
                     }
                   },
                   {
@@ -1741,9 +2005,27 @@
         "existingSessionHostSubnetId": "[if(equals(steps('hub').networkMode,'existing'), coalesce(steps('hub').existingSection.existingSessionHostSubnetId,''), '')]",
         "existingPrivateEndpointSubnetId": "[if(equals(steps('hub').networkMode,'existing'), coalesce(steps('hub').existingSection.existingPrivateEndpointSubnetId,''), '')]",
         "avdResourceGroupName": "[if(equals(steps('hub').networkMode,'existing'), coalesce(steps('hub').existingSection.avdResourceGroupName,''), '')]",
-        "peerToExistingHubVnetId": "[if(equals(steps('hub').networkMode,'create'), coalesce(steps('hub').peerSection.peerToExistingHubVnetId,''), '')]",
+        "peerToExistingHubVnetId": "[if(and(equals(steps('hub').networkMode,'create'), equals(steps('hub').hubMode,'existing')), coalesce(steps('hub').peerSection.peerToExistingHubVnetId,''), '')]",
         "egressMode": "[if(equals(steps('hub').networkMode,'create'), steps('hub').egressMode, 'none')]",
-        "firewallPrivateIp": "[if(equals(steps('hub').egressMode,'firewall'), coalesce(steps('hub').firewallSection.firewallPrivateIp,''), '')]"
+        "firewallPrivateIp": "[if(equals(steps('hub').egressMode,'firewall'), coalesce(steps('hub').firewallSection.firewallPrivateIp,''), '')]",
+        "hubMode": "[if(equals(steps('hub').networkMode,'create'), steps('hub').hubMode, 'none')]",
+        "hubRgName": "[coalesce(steps('hub').hubSection.hubRgName, 'rg-hub')]",
+        "hubVnetName": "[coalesce(steps('hub').hubSection.hubVnetName, 'vnet-hub')]",
+        "hubAddressPrefix": "[coalesce(steps('hub').hubSection.hubAddressPrefix, '10.0.0.0/16')]",
+        "gatewaySubnetPrefix": "[coalesce(steps('hub').hubSection.gatewaySubnetPrefix, '10.0.0.0/27')]",
+        "identitySubnetName": "[coalesce(steps('hub').hubSection.identitySubnetName, 'snet-identity')]",
+        "identitySubnetPrefix": "[coalesce(steps('hub').hubSection.identitySubnetPrefix, '')]",
+        "hubFirewallType": "[if(and(equals(steps('hub').networkMode,'create'), equals(steps('hub').hubMode,'create')), steps('hub').hubFirewallType, 'none')]",
+        "azureFirewallTier": "[coalesce(steps('hub').azureFirewallSection.azureFirewallTier, 'Standard')]",
+        "azureFirewallSubnetPrefix": "[coalesce(steps('hub').azureFirewallSection.azureFirewallSubnetPrefix, '')]",
+        "azureFirewallManagementSubnetPrefix": "[coalesce(steps('hub').azureFirewallSection.azureFirewallManagementSubnetPrefix, '')]",
+        "hubFirewallInternalIp": "[coalesce(steps('hub').fortigateSection.hubFirewallInternalIp, '')]",
+        "fgtExternalPrefix": "[coalesce(steps('hub').fortigateSection.fgtExternalPrefix, '')]",
+        "fgtInternalPrefix": "[coalesce(steps('hub').fortigateSection.fgtInternalPrefix, '')]",
+        "fgtHaPrefix": "[coalesce(steps('hub').fortigateSection.fgtHaPrefix, '')]",
+        "fgtMgmtPrefix": "[coalesce(steps('hub').fortigateSection.fgtMgmtPrefix, '')]",
+        "deployBastionSubnet": "[coalesce(steps('hub').deployBastionSubnet, false)]",
+        "bastionSubnetPrefix": "[coalesce(steps('hub').bastionSubnetPrefix, '')]"
       }
     }
   }

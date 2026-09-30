@@ -57,12 +57,21 @@ Microsoft's own AVD landing zone accelerator does not create a hub, treats an ex
 VNet as a first-class choice, and recommends a NAT gateway over a firewall for AVD
 egress. This template did the opposite on all three. It now follows theirs.
 
-**No hub.** Hub creation is gone, along with `modules/hub.bicep`,
-`modules/azureFirewall.bicep`, the FortiGate and Azure Firewall subnets, the Bastion
-subnet, the gateway subnet and the identity subnet. A hub carries the customer's
-gateway, firewall and domain controllers; it belongs to whoever runs their network, and
-an AVD workload peers into it. Building one meant owning a design that was not ours,
-and it forced the special cases that made the wizard contradict itself.
+**The hub is a choice, not an assumption.** `hubMode` — `none`, `create` or
+`existing` — and it only applies when creating VNets. Previously the hub was implied by
+the firewall question, which is why that question kept needing special cases bolted onto
+it.
+
+Microsoft's accelerator only does `existing`: a hub carries the customer's gateway,
+firewall and domain controllers, belongs to whoever runs their network, and an AVD
+workload peers into it. That is the default here, and `create` remains for a greenfield
+site where nobody else is going to build one. The wizard says as much where you choose.
+
+A created hub gets its gateway subnet, optionally an identity subnet for domain
+controllers, a Bastion subnet, and a firewall — Azure Firewall deployed with the
+documented AVD egress rules, or the FortiGate NIC subnets with the appliance left to
+you. A firewall in a hub built here becomes the egress path for every created VNet,
+overriding `egressMode`; there is no sense in building one and routing around it.
 
 **Create or use existing VNets.** The Network tab's first question. `create` works as
 before, from the Spokes and Subnets tabs. `existing` takes the session host subnet and

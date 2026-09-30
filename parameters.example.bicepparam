@@ -48,10 +48,62 @@ param existingSessionHostSubnetId = ''
 param existingPrivateEndpointSubnetId = ''
 param avdResourceGroupName = ''
 
-// Only used when networkMode = 'create'. Every spoke with peerToHub = true is
+// Whether there is a hub, and where it comes from. Only applies when
+// networkMode = 'create'.
+//   'none'     no hub; the VNets stand on their own.
+//   'create'   build one here, with a gateway subnet and optionally a firewall,
+//              an identity subnet for domain controllers and a Bastion subnet.
+//   'existing' peer to one that already exists.
+//
+// Microsoft's model is only the third. A hub carries the customer's gateway,
+// firewall and domain controllers, so creating one means owning part of their
+// network design — right for a greenfield site, questionable where they already
+// have Azure.
+param hubMode = 'none'
+
+// Only used when hubMode = 'existing'. Every spoke with peerToHub = true is
 // peered to this VNet. The hub side of the peering is created only when the hub
 // is in this same subscription; otherwise the customer's network team adds it.
 param peerToExistingHubVnetId = ''
+
+// Everything below is only used when hubMode = 'create'.
+param hubRgName = 'rg-hub'
+param hubVnetName = 'vnet-hub'
+param hubAddressPrefix = '10.0.0.0/16'
+param gatewaySubnetPrefix = '10.0.0.0/27'
+
+// Subnet for domain controllers, added after the landing zone. Empty creates
+// none. A hybrid deployment needs it.
+param identitySubnetName = 'snet-identity'
+param identitySubnetPrefix = ''
+
+// AzureBastionSubnet. The name is fixed by Azure and /26 is the minimum.
+// Creates the subnet only; no Bastion host is deployed.
+param deployBastionSubnet = false
+param bastionSubnetPrefix = ''
+
+// Firewall in the created hub. Selecting one makes it the egress path for every
+// created VNet, overriding egressMode.
+//   'azureFirewall' deploys the firewall and a policy carrying the documented
+//                   AVD egress rules; its private IP is read from the resource.
+//   'fortigate'     creates the four NIC subnets only. The appliance, its
+//                   licensing and its HA pairing are yours, and
+//                   hubFirewallInternalIp has to be supplied by hand.
+param hubFirewallType = 'none'
+
+// Required when hubFirewallType = 'fortigate'. Must sit inside fgtInternalPrefix.
+param hubFirewallInternalIp = ''
+param fgtExternalPrefix = ''
+param fgtInternalPrefix = ''
+param fgtHaPrefix = ''
+param fgtMgmtPrefix = ''
+
+// Only used when hubFirewallType = 'azureFirewall'. Basic tops out at 250 Mbps
+// and requires the management subnet with a second public IP, unconditionally.
+param azureFirewallTier = 'Standard'
+param azureFirewallSubnetPrefix = ''
+param azureFirewallManagementSubnetPrefix = ''
+param azureFirewallZones = []
 
 // How VMs reach the internet.
 //   'natGateway' a NAT gateway per spoke that asks for one. Microsoft's
