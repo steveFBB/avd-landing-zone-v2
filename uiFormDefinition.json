@@ -1431,8 +1431,8 @@
                 "columns": [
                   {
                     "id": "name",
-                    "header": "Name",
-                    "width": "1fr",
+                    "header": "Pool name (session host prefix)",
+                    "width": "1.5fr",
                     "element": {
                       "type": "Microsoft.Common.TextBox",
                       "placeholder": "desktops",
@@ -1444,7 +1444,8 @@
                             "message": "Lowercase letters, digits and hyphens, 2 to 24 characters."
                           }
                         ]
-                      }
+                      },
+                      "toolTip": "The short name this pool is built from. It names the host pool (hp-<name>), its desktop application group (ag-<name>-desktop), and the session host VMs themselves: lowercased, hyphens removed, cut to 11 characters, then -0, -1, -2 per host. So 'desktops' gives hp-desktops and VMs desktops-0, desktops-1. Two pools whose names match in their first 11 characters after hyphens are removed would produce colliding VM names - give them distinct prefixes."
                     }
                   },
                   {
@@ -1666,6 +1667,15 @@
                 ]
               },
               "visible": true
+            },
+            {
+              "name": "startVmOnConnectNotice",
+              "type": "Microsoft.Common.InfoBox",
+              "visible": "[not(empty(filter(steps('avd').hostPools, (item) => item.startVMOnConnect)))]",
+              "options": {
+                "icon": "Warning",
+                "text": "Start VM on connect does nothing on its own. The Azure Virtual Desktop service principal needs the Desktop Virtualization Power On Contributor role on a scope containing the session host VMs - the subscription is what Microsoft recommends - or users get a connection failure instead of a VM starting. This template does not assign it: the assignment needs User Access Administrator or Owner on the subscription, which the deployment does not assume. Assign it once per subscription, in Access control (IAM) at subscription scope, to the 'Azure Virtual Desktop' service principal (app ID 9cdead84-a844-4324-93f2-b2e6bb768d07)."
+              }
             },
             {
               "name": "quotaNotice",
