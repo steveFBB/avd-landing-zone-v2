@@ -91,12 +91,22 @@ param bastionSubnetPrefix = ''
 //                   hubFirewallInternalIp has to be supplied by hand.
 param hubFirewallType = 'none'
 
-// Required when hubFirewallType = 'fortigate'. Must sit inside fgtInternalPrefix.
+// Required when hubFirewallType = 'fortigate'. The appliance's internal IP must
+// sit inside fgtInternalPrefix. The template creates the four NIC subnets; the
+// appliance itself, its licensing and its HA pairing are yours.
 param hubFirewallInternalIp = ''
 param fgtExternalPrefix = ''
 param fgtInternalPrefix = ''
 param fgtHaPrefix = ''
 param fgtMgmtPrefix = ''
+
+// Names for those four subnets, as you want them. The only subnet names this
+// template cannot let you choose are the ones Azure fixes: GatewaySubnet,
+// AzureFirewallSubnet, AzureFirewallManagementSubnet and AzureBastionSubnet.
+param fgtExternalSubnetName = 'snet-fgt-external'
+param fgtInternalSubnetName = 'snet-fgt-internal'
+param fgtHaSubnetName = 'snet-fgt-ha'
+param fgtMgmtSubnetName = 'snet-fgt-mgmt'
 
 // Only used when hubFirewallType = 'azureFirewall'. Basic tops out at 250 Mbps
 // and requires the management subnet with a second public IP, unconditionally.

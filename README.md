@@ -313,6 +313,11 @@ resources.
 The `name` column on each grid is a **key**, not a name: subnets reference their
 parent VNet by it. Nothing is named from it unless you leave a name blank.
 
+The FortiGate NIC subnets are named by `fgtExternalSubnetName` and its three
+siblings. The only subnet names this template cannot let you choose are the ones
+Azure fixes: `GatewaySubnet`, `AzureFirewallSubnet`,
+`AzureFirewallManagementSubnet` and `AzureBastionSubnet`.
+
 Still derived, because they have no grid row of their own: NSGs
 (`nsg-<subnet name>`), route tables (`rt-<key>`), NAT gateways (`nat-<key>`),
 host pools (`hp-<name>`), application groups (`ag-<name>-desktop`), the Log
@@ -415,7 +420,7 @@ and the RFC1918 ranges to it. Nothing is deployed.
 
 | | `azureFirewall` | `fortigate` |
 |---|---|---|
-| Hub subnets | `AzureFirewallSubnet`, plus `AzureFirewallManagementSubnet` on Basic | four FortiGate NIC subnets |
+| Hub subnets | `AzureFirewallSubnet`, plus `AzureFirewallManagementSubnet` on Basic | four FortiGate NIC subnets, named by you |
 | The appliance | deployed, with an AVD egress policy | yours to deploy |
 | IP for the routes | read from the resource | `hubFirewallInternalIp`, by hand |
 

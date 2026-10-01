@@ -43,6 +43,12 @@ param fgtInternalPrefix string = ''
 param fgtHaPrefix string = ''
 param fgtMgmtPrefix string = ''
 
+@description('Names for the four FortiGate NIC subnets, as you want them. Every customer names things differently, so none of these are fixed.')
+param fgtExternalSubnetName string = 'snet-fgt-external'
+param fgtInternalSubnetName string = 'snet-fgt-internal'
+param fgtHaSubnetName string = 'snet-fgt-ha'
+param fgtMgmtSubnetName string = 'snet-fgt-mgmt'
+
 @description('''Prefix for AzureFirewallSubnet. The name is fixed by Azure and the
 prefix must be /26 or larger. A /26 is enough at any scale - the firewall provisions
 extra instances inside it as it scales, and it never needs enlarging.''')
@@ -123,7 +129,7 @@ resource snetGateway 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
 //
 resource snetFgtExternal 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployFgtSubnets) {
   parent: vnet
-  name: 'snet-fgt-external'
+  name: fgtExternalSubnetName
   properties: {
     addressPrefix: fgtExternalPrefix
   }
@@ -134,7 +140,7 @@ resource snetFgtExternal 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' 
 
 resource snetFgtInternal 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployFgtSubnets) {
   parent: vnet
-  name: 'snet-fgt-internal'
+  name: fgtInternalSubnetName
   properties: {
     addressPrefix: fgtInternalPrefix
   }
@@ -146,7 +152,7 @@ resource snetFgtInternal 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' 
 
 resource snetFgtHa 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployFgtSubnets) {
   parent: vnet
-  name: 'snet-fgt-ha'
+  name: fgtHaSubnetName
   properties: {
     addressPrefix: fgtHaPrefix
   }
@@ -159,7 +165,7 @@ resource snetFgtHa 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (
 
 resource snetFgtMgmt 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = if (deployFgtSubnets) {
   parent: vnet
-  name: 'snet-fgt-mgmt'
+  name: fgtMgmtSubnetName
   properties: {
     addressPrefix: fgtMgmtPrefix
   }

@@ -17,6 +17,29 @@ of a customer**, which this is not yet.
 Everything below has been built. Only the first group has been run against
 Azure.
 
+## Wizard clarity pass
+
+Five changes, all from reading the wizard tab by tab rather than from a failure.
+
+- **The bootstrap identity tick box** said only "found by name, so there is nothing to
+  enter". It now says what the identity is for - the four Microsoft Graph operations a
+  portal deployment cannot perform itself - and what happens either way: ticked with no
+  identity present fails the deployment partway through, unticked skips all four steps.
+- **"Parent VNet" is now "Parent spoke key"** on the Subnets grid. The short header I
+  introduced invited the VNet's name, which is not what the column wants, and a mismatch
+  fails the deployment several modules deep.
+- **New subnet rows are pre-filled** with the first spoke's key, through
+  `first(map(steps('spokes').spokes, (item) => item.name))`. CreateUiDefinition has no
+  `join()`, so building a validation regex from every key - which would block a mismatch
+  outright rather than pre-filling the common case - is not available.
+- **The FortiGate NIC subnets are named by you.** They were the last hard-coded resource
+  names in the template. The only ones left are those Azure fixes itself: GatewaySubnet,
+  AzureFirewallSubnet, AzureFirewallManagementSubnet and AzureBastionSubnet.
+- **The firewall address fields carry defaults rather than placeholders**, so a FortiGate
+  or Azure Firewall hub no longer demands five or six values typed from scratch. They sit
+  inside the default hub address space; overwrite them when the customer's addressing
+  differs.
+
 ## Fixed
 
 **The Basics tab described a template that no longer exists.** It called every deployment

@@ -177,6 +177,12 @@ param fgtInternalPrefix string = ''
 param fgtHaPrefix string = ''
 param fgtMgmtPrefix string = ''
 
+@description('Names for the four FortiGate NIC subnets, as you want them. The names Azure fixes - GatewaySubnet, AzureFirewallSubnet, AzureBastionSubnet - are the only ones this template cannot let you choose.')
+param fgtExternalSubnetName string = 'snet-fgt-external'
+param fgtInternalSubnetName string = 'snet-fgt-internal'
+param fgtHaSubnetName string = 'snet-fgt-ha'
+param fgtMgmtSubnetName string = 'snet-fgt-mgmt'
+
 @description('Prefix for AzureFirewallSubnet. The name is fixed by Azure and /26 is the minimum.')
 param azureFirewallSubnetPrefix string = ''
 
@@ -1079,6 +1085,10 @@ module hub 'modules/hub.bicep' = if (createHub) {
     fgtInternalPrefix: fgtInternalPrefix
     fgtHaPrefix: fgtHaPrefix
     fgtMgmtPrefix: fgtMgmtPrefix
+    fgtExternalSubnetName: fgtExternalSubnetName
+    fgtInternalSubnetName: fgtInternalSubnetName
+    fgtHaSubnetName: fgtHaSubnetName
+    fgtMgmtSubnetName: fgtMgmtSubnetName
     deployBastionSubnet: deployBastionSubnet
     bastionSubnetPrefix: bastionSubnetPrefix
     azureFirewallSubnetPrefix: azureFirewallSubnetPrefix

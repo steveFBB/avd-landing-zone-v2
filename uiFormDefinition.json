@@ -192,7 +192,7 @@
               "type": "Microsoft.Common.CheckBox",
               "label": "Use the bootstrap managed identity",
               "defaultValue": true,
-              "toolTip": "Found by name, so there is nothing to enter. Untick only if scripts/bootstrap-entra-identity.ps1 has not been run in this tenant."
+              "toolTip": "Four steps here are Microsoft Graph operations a portal deployment cannot do by itself: creating the access groups, granting admin consent on the storage account's Entra application, tagging it for cloud group SIDs, and renaming the published desktop. A deployment script running as this managed identity can. It is found by name, so there is nothing to enter. Leave it ticked unless scripts/bootstrap-entra-identity.ps1 has never been run in this tenant - ticked with no identity present fails the deployment partway through; unticked skips all four steps and you do them by hand."
             },
             {
               "name": "noIdentityNotice",
@@ -582,57 +582,97 @@
                   "name": "hubFirewallInternalIp",
                   "type": "Microsoft.Common.TextBox",
                   "label": "Appliance internal IP",
-                  "placeholder": "10.0.32.68",
                   "toolTip": "The template does not deploy the appliance and cannot discover this. Route tables point here.",
                   "constraints": {
                     "required": true,
                     "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
                     "validationMessage": "Enter an IPv4 address."
-                  }
+                  },
+                  "defaultValue": "10.0.32.68"
                 },
                 {
                   "name": "fgtExternalPrefix",
                   "type": "Microsoft.Common.TextBox",
                   "label": "External subnet",
-                  "placeholder": "10.0.32.0/26",
                   "constraints": {
                     "required": true,
                     "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
                     "validationMessage": "Enter a CIDR range."
-                  }
+                  },
+                  "defaultValue": "10.0.32.0/26"
                 },
                 {
                   "name": "fgtInternalPrefix",
                   "type": "Microsoft.Common.TextBox",
                   "label": "Internal subnet",
-                  "placeholder": "10.0.32.64/26",
                   "toolTip": "The appliance's internal IP must sit inside this range.",
                   "constraints": {
                     "required": true,
                     "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
                     "validationMessage": "Enter a CIDR range."
-                  }
+                  },
+                  "defaultValue": "10.0.32.64/26"
                 },
                 {
                   "name": "fgtHaPrefix",
                   "type": "Microsoft.Common.TextBox",
                   "label": "HA subnet",
-                  "placeholder": "10.0.32.128/29",
                   "constraints": {
                     "required": true,
                     "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
                     "validationMessage": "Enter a CIDR range."
-                  }
+                  },
+                  "defaultValue": "10.0.32.128/29"
                 },
                 {
                   "name": "fgtMgmtPrefix",
                   "type": "Microsoft.Common.TextBox",
                   "label": "Management subnet",
-                  "placeholder": "10.0.32.160/27",
                   "constraints": {
                     "required": true,
                     "regex": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$",
                     "validationMessage": "Enter a CIDR range."
+                  },
+                  "defaultValue": "10.0.32.160/27"
+                },
+                {
+                  "name": "fgtExternalSubnetName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "External subnet name",
+                  "defaultValue": "snet-fgt-external",
+                  "toolTip": "Named exactly as you type it.",
+                  "constraints": {
+                    "required": true
+                  }
+                },
+                {
+                  "name": "fgtInternalSubnetName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Internal subnet name",
+                  "defaultValue": "snet-fgt-internal",
+                  "toolTip": "Named exactly as you type it.",
+                  "constraints": {
+                    "required": true
+                  }
+                },
+                {
+                  "name": "fgtHaSubnetName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "HA subnet name",
+                  "defaultValue": "snet-fgt-ha",
+                  "toolTip": "Named exactly as you type it.",
+                  "constraints": {
+                    "required": true
+                  }
+                },
+                {
+                  "name": "fgtMgmtSubnetName",
+                  "type": "Microsoft.Common.TextBox",
+                  "label": "Management subnet name",
+                  "defaultValue": "snet-fgt-mgmt",
+                  "toolTip": "Named exactly as you type it.",
+                  "constraints": {
+                    "required": true
                   }
                 }
               ]
@@ -954,7 +994,7 @@
               "visible": "[equals(steps('hub').networkMode, 'create')]",
               "options": {
                 "icon": "Info",
-                "text": "Parent VNet must match a Spoke key exactly. It is not corrected for you, and a row pointing at a spoke that does not exist fails the deployment partway through. The AVD spoke needs one subnet with NSG rules set to 'AVD' - the session hosts go there - and one with Private endpoint set to Yes, which is where the FSLogix endpoint lands. The same subnet can do both."
+                "text": "Parent spoke key must match a Spoke key from the Spokes tab exactly. New rows are pre-filled with the first one, but it is not corrected for you, and a row pointing at a spoke that does not exist fails the deployment partway through. The AVD spoke needs one subnet with NSG rules set to 'AVD' - the session hosts go there - and one with Private endpoint set to Yes, which is where the FSLogix endpoint lands. The same subnet can do both."
               }
             },
             {
@@ -974,7 +1014,7 @@
                 "columns": [
                   {
                     "id": "spoke",
-                    "header": "Parent VNet",
+                    "header": "Parent spoke key",
                     "width": "1fr",
                     "element": {
                       "type": "Microsoft.Common.TextBox",
@@ -988,7 +1028,8 @@
                           }
                         ]
                       },
-                      "toolTip": "The Spoke key from the Spokes tab, character for character."
+                      "toolTip": "The Spoke key from the Spokes tab, character for character. Not the VNet's name.",
+                      "defaultValue": "[first(map(steps('spokes').spokes, (item) => item.name))]"
                     }
                   },
                   {
@@ -2025,7 +2066,11 @@
         "fgtHaPrefix": "[coalesce(steps('hub').fortigateSection.fgtHaPrefix, '')]",
         "fgtMgmtPrefix": "[coalesce(steps('hub').fortigateSection.fgtMgmtPrefix, '')]",
         "deployBastionSubnet": "[coalesce(steps('hub').deployBastionSubnet, false)]",
-        "bastionSubnetPrefix": "[coalesce(steps('hub').bastionSubnetPrefix, '')]"
+        "bastionSubnetPrefix": "[coalesce(steps('hub').bastionSubnetPrefix, '')]",
+        "fgtExternalSubnetName": "[coalesce(steps('hub').fortigateSection.fgtExternalSubnetName, '')]",
+        "fgtInternalSubnetName": "[coalesce(steps('hub').fortigateSection.fgtInternalSubnetName, '')]",
+        "fgtHaSubnetName": "[coalesce(steps('hub').fortigateSection.fgtHaSubnetName, '')]",
+        "fgtMgmtSubnetName": "[coalesce(steps('hub').fortigateSection.fgtMgmtSubnetName, '')]"
       }
     }
   }
